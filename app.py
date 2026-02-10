@@ -1,11 +1,11 @@
 # app.py
 import os
-import sys
 import joblib
 import numpy as np
 import pandas as pd
 import streamlit as st
 import sklearn
+import sys
 
 st.set_page_config(page_title="Cardiovascular Health Risk Screener", page_icon="❤️", layout="wide")
 MODEL_PATH = "cardiovascular_health_model.pkl"
@@ -69,21 +69,23 @@ def show_env_versions():
         f"scikit-learn: {sklearn.__version__} | joblib: {joblib.__version__}"
     )
 
-@st.cache_resource(show_spinner=False)
-def try_load_model(path: str):
-    """
-    Non-fatal model loader:
-    Returns (model_or_None, error_string_or_None).
-    No st.stop() here so app never crashes on startup.
-    """
+def load_model(path: str):
     if not os.path.exists(path):
-        return None, f"Model file not found: {path}"
-
+        st.error(f"Model file not found: {path}\n\nPut '{MODEL_PATH}' in the same folder as app.py.")
+        st.stop()
     try:
-        m = joblib.load(path)
-        return m, None
+        return joblib.load(path)
     except Exception as e:
-        return None, f"{type(e).__name__}: {e}"
+        st.error("Failed to load the model file.")
+        show_env_versions()
+        st.warning(
+            "This usually happens when the model was saved under a different Python/NumPy/scikit-learn version.\n\n"
+            "Fix:\n"
+            "1) Add a requirements.txt to pin versions (recommended)\n"
+            "2) Or re-save the model using the same versions as this runtime."
+        )
+        st.exception(e)
+        st.stop()
 
 def validate_inputs(h_cm, w_kg, bmi, alcohol, fruit, veg, fried):
     errors = []
@@ -114,10 +116,12 @@ def validate_inputs(h_cm, w_kg, bmi, alcohol, fruit, veg, fried):
             errors.append(f"{name} looks too high. Use ≤ {hi}.")
     return errors
 
+def build_raw_input_row(**kwargs):
+    return pd.DataFrame([kwargs])
+
 def encode_like_training(raw_df: pd.DataFrame) -> pd.DataFrame:
     for col in CAT_COLS:
         raw_df[col] = pd.Categorical(raw_df[col], categories=CATS[col], ordered=True)
-
     encoded = pd.get_dummies(raw_df, drop_first=True)
     aligned = encoded.reindex(columns=EXPECTED_COLS, fill_value=0)
     return aligned.astype(float)
@@ -132,13 +136,16 @@ def predict_proba_1(model, X: pd.DataFrame) -> float:
     return 1.0 if pred == 1 else 0.0
 
 # -------------------------
+# Load model
+# -------------------------
+model = load_model(MODEL_PATH)
+
+# -------------------------
 # UI
 # -------------------------
 st.title("❤️ Cardiovascular Health Risk Screener")
 st.caption("Risk screening only — not a medical diagnosis.")
 show_env_versions()
-
-model, model_err = try_load_model(MODEL_PATH)
 
 with st.expander("Important note", expanded=True):
     st.write(
@@ -146,18 +153,6 @@ with st.expander("Important note", expanded=True):
         "- It is **not** a diagnosis.\n"
         "- If you have concerns, seek advice from a qualified healthcare professional."
     )
-
-# Clear, user-facing model status (no crash)
-if model is None:
-    st.error("Model could not be loaded, so predictions are currently unavailable.")
-    st.warning(
-        "Cause: model file incompatibility (Python/NumPy/scikit-learn mismatch) OR missing model file.\n\n"
-        "Fix:\n"
-        "• If you can control Python on deployment: use Python 3.10/3.11.\n"
-        "• Otherwise: re-save the model in the same runtime as deployment.\n"
-    )
-    with st.expander("Technical details (for developer/marker)"):
-        st.code(model_err)
 
 left, right = st.columns([1.05, 0.95], gap="large")
 
@@ -242,37 +237,33 @@ with right:
 
     if submitted:
         errs = validate_inputs(height_cm, weight_kg, bmi, alcohol, fruit, veg, fried)
-
         if errs:
             st.error("Please fix these before predicting:")
             for e in errs:
                 st.write(f"- {e}")
-
-        elif model is None:
-            st.error("Prediction unavailable because the model failed to load.")
-            st.info("Fix the deployment environment (Python/NumPy/sklearn versions) or re-save the model file.")
-
         else:
-            raw_df = pd.DataFrame([{
-                "General_Health": general_health,
-                "Checkup": checkup,
-                "Exercise": exercise,
-                "Skin_Cancer": skin_cancer,
-                "Other_Cancer": other_cancer,
-                "Depression": depression,
-                "Diabetes": diabetes,
-                "Arthritis": arthritis,
-                "Sex": sex,
-                "Age_Category": age_category,
-                "Smoking_History": smoking_history,
-                "Height_(cm)": float(height_cm),
-                "Weight_(kg)": float(weight_kg),
-                "BMI": float(bmi),
-                "Alcohol_Consumption": float(alcohol),
-                "Fruit_Consumption": float(fruit),
-                "Green_Vegetables_Consumption": float(veg),
-                "FriedPotato_Consumption": float(fried),
-            }])
+            raw_df = build_raw_input_row(
+                General_Health=general_health,
+                Checkup=checkup,
+                Exercise=exercise,
+                Skin_Cancer=skin_cancer,
+                Other_Cancer=other_cancer,
+                Depression=depression,
+                Diabetes=diabetes,
+                Arthritis=arthritis,
+                Sex=sex,
+                Age_Category=age_category,
+                Smoking_History=smoking_history,
+                **{
+                    "Height_(cm)": float(height_cm),
+                    "Weight_(kg)": float(weight_kg),
+                    "BMI": float(bmi),
+                    "Alcohol_Consumption": float(alcohol),
+                    "Fruit_Consumption": float(fruit),
+                    "Green_Vegetables_Consumption": float(veg),
+                    "FriedPotato_Consumption": float(fried),
+                }
+            )
 
             try:
                 X_input = encode_like_training(raw_df)
