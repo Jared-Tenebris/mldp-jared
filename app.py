@@ -63,17 +63,14 @@ def expected_dummy_columns():
 
 EXPECTED_COLS = expected_dummy_columns()
 
-
 # -------------------------
 # Styling (clean, modern, rubric-friendly)
 # -------------------------
 st.markdown(
     """
 <style>
-/* Wider max width + nicer spacing */
 .block-container { padding-top: 1.2rem; padding-bottom: 2.2rem; max-width: 1280px; }
 
-/* Subtle card styling */
 .card {
   border: 1px solid rgba(120,120,120,0.18);
   border-radius: 18px;
@@ -84,19 +81,15 @@ st.markdown(
 .card h3 { margin-top: 0; margin-bottom: 0.35rem; }
 .muted { color: rgba(140,140,140,0.95); font-size: 0.95rem; }
 
-/* More readable labels */
 label, .stMarkdown p { font-size: 0.98rem; }
 
-/* Buttons */
 .stButton>button, .stForm button {
   border-radius: 12px !important;
   padding: 0.55rem 0.9rem !important;
 }
 
-/* Sidebar title style */
 .sidebar-title { font-size: 1.05rem; font-weight: 700; margin-bottom: 0.4rem; }
 
-/* Risk badge */
 .badge {
   display:inline-block; padding: 0.22rem 0.55rem; border-radius: 999px;
   border: 1px solid rgba(120,120,120,0.22);
@@ -106,10 +99,8 @@ label, .stMarkdown p { font-size: 0.98rem; }
 .badge-mid { background: rgba(234,179,8,0.14); }
 .badge-high{ background: rgba(239,68,68,0.14); }
 
-/* Divider */
 .hr { height:1px; background: rgba(140,140,140,0.20); margin: 0.8rem 0 0.8rem 0; }
 
-/* Hide Streamlit default anchor link icon */
 a[data-testid="stHeaderActionElements"] { display:none; }
 </style>
 """,
@@ -139,23 +130,17 @@ def load_model(path: str):
 def validate_inputs(h_cm, w_kg, bmi, alcohol, fruit, veg, fried):
     errors = []
 
-    # Body measurements
+    # Body measurements (no max limits, but cannot be negative/zero)
     if h_cm is None or h_cm <= 0:
         errors.append("Height must be a positive number.")
-    elif h_cm < 100 or h_cm > 230:
-        errors.append("Height looks unusual. Use 100–230 cm.")
 
     if w_kg is None or w_kg <= 0:
         errors.append("Weight must be a positive number.")
-    elif w_kg < 25 or w_kg > 300:
-        errors.append("Weight looks unusual. Use 25–300 kg.")
 
     if bmi is None or bmi <= 0:
         errors.append("BMI could not be calculated. Check height/weight.")
-    elif bmi < 10 or bmi > 60:
-        errors.append("BMI looks unusual. Adjust height/weight.")
 
-    # Monthly consumption (user-friendly bounds)
+    # Monthly consumption (cannot be negative; keep reasonable upper bounds)
     bounds = [
         ("Alcohol (drinks/month)", alcohol, 200),
         ("Fruit (servings/month)", fruit, 200),
@@ -171,7 +156,6 @@ def validate_inputs(h_cm, w_kg, bmi, alcohol, fruit, veg, fried):
 
 
 def encode_like_training(raw_df: pd.DataFrame) -> pd.DataFrame:
-    # Ensure categorical ordering/categories exactly match training
     for col in CAT_COLS:
         raw_df[col] = pd.Categorical(raw_df[col], categories=CATS[col], ordered=True)
 
@@ -191,12 +175,6 @@ def predict_proba_1(model, X: pd.DataFrame) -> float:
 
 
 def risk_bucket(prob: float):
-    """
-    Keep it simple + explainable for a screener:
-    - Low: < 0.33
-    - Moderate: 0.33–0.66
-    - Higher: > 0.66
-    """
     if prob < 0.33:
         return "Lower risk", "badge badge-low"
     if prob < 0.66:
@@ -209,13 +187,10 @@ def pretty_pct(prob: float) -> str:
 
 
 # -------------------------
-# Header
+# Header (kept, but removed the extra "Important" card)
 # -------------------------
-top_left, top_right = st.columns([0.72, 0.28], gap="large")
-
-with top_left:
-    st.markdown(
-        """
+st.markdown(
+    """
 <div class="card">
   <h2 style="margin:0;">❤️ Cardiovascular Health Risk Screener</h2>
   <div class="muted">
@@ -224,22 +199,8 @@ with top_left:
   </div>
 </div>
 """,
-        unsafe_allow_html=True,
-    )
-
-with top_right:
-    st.markdown(
-        """
-<div class="card">
-  <h3 style="margin:0;">Important</h3>
-  <div class="muted" style="line-height:1.35;">
-    If you feel unwell or are worried about symptoms, please seek advice from a qualified healthcare professional.
-  </div>
-</div>
-""",
-        unsafe_allow_html=True,
-    )
-
+    unsafe_allow_html=True,
+)
 st.markdown('<div class="hr"></div>', unsafe_allow_html=True)
 
 # -------------------------
@@ -280,7 +241,6 @@ with st.sidebar:
 # -------------------------
 left, right = st.columns([1.05, 0.95], gap="large")
 
-# UI options (reordered for user friendliness; values still match training strings)
 GENERAL_HEALTH_UI = ["Excellent", "Very Good", "Good", "Fair", "Poor"]
 CHECKUP_UI = [
     "Within the past year",
@@ -294,14 +254,12 @@ SEX_UI = ["Female", "Male"]
 AGE_UI = CATS["Age_Category"]
 
 with left:
-    st.markdown('<div class="card">', unsafe_allow_html=True)
-    st.subheader("1) Enter details")
+    # Removed the outer "card" box above Enter details (as requested)
+    st.subheader("Enter details")
 
-    # Use tabs to feel “app-like”
     tab_health, tab_body, tab_life = st.tabs(["Health", "Body", "Lifestyle (Monthly)"])
 
     with st.form("risk_form", clear_on_submit=False):
-        # --- Health tab ---
         with tab_health:
             c1, c2 = st.columns(2)
 
@@ -310,24 +268,25 @@ with left:
                     "General health",
                     GENERAL_HEALTH_UI,
                     index=2,
-                    help="Your overall self-rated health.",
+                    help="Your overall self-rated health (how you feel in general).",
                 )
                 checkup = st.selectbox(
                     "Last medical checkup",
                     CHECKUP_UI,
                     index=0,
-                    help="When you last had a routine checkup.",
+                    help="When you last had a routine medical checkup.",
                 )
                 age_category = st.selectbox(
                     "Age group",
                     AGE_UI,
                     index=0,
-                    help="Choose your age bracket.",
+                    help="Select the age range that matches you.",
                 )
                 sex = st.selectbox(
                     "Sex",
                     SEX_UI,
                     index=0,
+                    help="Used as an input feature for the model.",
                 )
 
             with c2:
@@ -336,44 +295,74 @@ with left:
                     YES_NO,
                     index=1,
                     horizontal=True,
-                    help="Any regular exercise activity.",
+                    help="Choose Yes if you do any regular physical activity/exercise.",
                 )
                 smoking_history = st.radio(
                     "Smoking history",
                     YES_NO,
                     index=0,
                     horizontal=True,
+                    help="Choose Yes if you have a smoking history.",
                 )
-                diabetes = st.radio("Diabetes", YES_NO, index=0, horizontal=True)
-                depression = st.radio("Depression", YES_NO, index=0, horizontal=True)
+                diabetes = st.radio(
+                    "Diabetes",
+                    YES_NO,
+                    index=0,
+                    horizontal=True,
+                    help="Choose Yes if you have been told you have diabetes.",
+                )
+                depression = st.radio(
+                    "Depression",
+                    YES_NO,
+                    index=0,
+                    horizontal=True,
+                    help="Choose Yes if you have been told you have depression.",
+                )
 
             c3, c4 = st.columns(2)
             with c3:
-                skin_cancer = st.radio("Skin cancer", YES_NO, index=0, horizontal=True)
-                other_cancer = st.radio("Other cancer", YES_NO, index=0, horizontal=True)
+                skin_cancer = st.radio(
+                    "Skin cancer",
+                    YES_NO,
+                    index=0,
+                    horizontal=True,
+                    help="Choose Yes if you have been told you have skin cancer.",
+                )
+                other_cancer = st.radio(
+                    "Other cancer",
+                    YES_NO,
+                    index=0,
+                    horizontal=True,
+                    help="Choose Yes if you have been told you have any other cancer.",
+                )
             with c4:
-                arthritis = st.radio("Arthritis", YES_NO, index=0, horizontal=True)
+                arthritis = st.radio(
+                    "Arthritis",
+                    YES_NO,
+                    index=0,
+                    horizontal=True,
+                    help="Choose Yes if you have been told you have arthritis.",
+                )
 
-        # --- Body tab ---
         with tab_body:
-            st.caption("Tip: BMI is auto-calculated from height and weight.")
+            st.caption("BMI is auto-calculated from height and weight.")
             m1, m2, m3 = st.columns([0.34, 0.34, 0.32])
 
             with m1:
                 height_cm = st.number_input(
                     "Height (cm)",
-                    min_value=80.0,
-                    max_value=250.0,
+                    min_value=0.0,
                     value=170.0,
                     step=1.0,
+                    help="Enter your height in centimetres (e.g., 170). Must be > 0.",
                 )
             with m2:
                 weight_kg = st.number_input(
                     "Weight (kg)",
-                    min_value=20.0,
-                    max_value=350.0,
+                    min_value=0.0,
                     value=70.0,
                     step=1.0,
+                    help="Enter your weight in kilograms (e.g., 70). Must be > 0.",
                 )
 
             bmi = None
@@ -383,7 +372,6 @@ with left:
             with m3:
                 st.metric("BMI (auto)", f"{bmi:.2f}" if bmi is not None else "—")
 
-            # A small, user-friendly interpretation (no medical claims)
             if bmi is not None:
                 if bmi < 18.5:
                     bmi_note = "Below typical range"
@@ -395,7 +383,6 @@ with left:
                     bmi_note = "High range"
                 st.caption(f"BMI note: **{bmi_note}** (general guide only).")
 
-        # --- Lifestyle tab (Monthly) ---
         with tab_life:
             st.caption("All values below are interpreted **per month**.")
             d1, d2 = st.columns(2)
@@ -405,14 +392,14 @@ with left:
                     min_value=0,
                     max_value=200,
                     value=0,
-                    help="Total number of alcoholic drinks in a month.",
+                    help="Total number of alcoholic drinks in an average month.",
                 )
                 fried = st.slider(
                     "Fried potato consumption (servings/month)",
                     min_value=0,
                     max_value=200,
                     value=0,
-                    help="E.g., fries/chips. Total servings in a month.",
+                    help="Total servings in an average month (e.g., fries/chips).",
                 )
             with d2:
                 fruit = st.slider(
@@ -420,14 +407,14 @@ with left:
                     min_value=0,
                     max_value=200,
                     value=30,
-                    help="Total fruit servings in a month (rough estimate).",
+                    help="Total fruit servings in an average month (rough estimate is fine).",
                 )
                 veg = st.slider(
                     "Green vegetables consumption (servings/month)",
                     min_value=0,
                     max_value=200,
                     value=30,
-                    help="Total green-veg servings in a month (rough estimate).",
+                    help="Total green-veg servings in an average month (rough estimate is fine).",
                 )
 
             if not compact_tips:
@@ -439,11 +426,9 @@ with left:
         st.markdown('<div class="hr"></div>', unsafe_allow_html=True)
         submitted = st.form_submit_button("Predict risk", use_container_width=True)
 
-    st.markdown("</div>", unsafe_allow_html=True)
-
 with right:
-    st.markdown('<div class="card">', unsafe_allow_html=True)
-    st.subheader("2) Results")
+    # Removed the outer "card" box above Results (as requested)
+    st.subheader("Results")
 
     if st.session_state.last_result is None:
         st.info("Complete the form and click **Predict risk** to see your result.")
@@ -468,7 +453,6 @@ with right:
         )
 
         st.progress(min(max(prob, 0.0), 1.0))
-
         st.markdown('<div class="hr"></div>', unsafe_allow_html=True)
 
         st.markdown("#### What this means")
@@ -489,14 +473,11 @@ with right:
             with st.expander("Debug: Encoded model input (X)"):
                 st.dataframe(st.session_state.last_result["X"], use_container_width=True)
 
-    st.markdown("</div>", unsafe_allow_html=True)
-
 # -------------------------
-# Prediction action (after UI so it feels responsive)
+# Prediction action
 # -------------------------
 if submitted:
     try:
-        # Build raw record exactly with training column names
         raw_df = pd.DataFrame([{
             "General_Health": general_health,
             "Checkup": checkup,
@@ -538,10 +519,7 @@ if submitted:
             X_input = encode_like_training(raw_df)
             prob = predict_proba_1(model, X_input)
 
-            st.session_state.last_result = {
-                "prob": float(prob),
-                "X": X_input,
-            }
+            st.session_state.last_result = {"prob": float(prob), "X": X_input}
             st.session_state.last_inputs = raw_df.to_dict(orient="records")[0]
             st.success("Prediction updated.")
             st.rerun()
@@ -554,4 +532,4 @@ if submitted:
 # Footer
 # -------------------------
 st.markdown('<div class="hr"></div>', unsafe_allow_html=True)
-st.caption(f"Model file: {MODEL_FILENAME} • App: app.py • Lifestyle inputs are interpreted per month.")
+st.caption("")
