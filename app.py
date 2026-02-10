@@ -16,7 +16,7 @@ st.set_page_config(
 )
 
 # -------------------------
-# Model + schema (must match training)
+# Model and schema (must match training)
 # -------------------------
 MODEL_FILENAME = "cardiovascular_health_model.pkl"
 MODEL_PATH = os.path.join(os.path.dirname(__file__), MODEL_FILENAME)
@@ -142,10 +142,10 @@ def validate_inputs(h_cm, w_kg, bmi, alcohol, fruit, veg, fried):
 
     # Monthly consumption (cannot be negative; keep reasonable upper bounds)
     bounds = [
-        ("Alcohol (drinks/month)", alcohol, 200),
-        ("Fruit (servings/month)", fruit, 200),
-        ("Green vegetables (servings/month)", veg, 200),
-        ("Fried potatoes (servings/month)", fried, 200),
+        ("Alcohol (drinks/month)", alcohol, 300),
+        ("Fruit (servings/month)", fruit, 300),
+        ("Green vegetables (servings/month)", veg, 300),
+        ("Fried potatoes (servings/month)", fried, 300),
     ]
     for name, val, hi in bounds:
         if val is None or val < 0:
@@ -195,7 +195,6 @@ st.markdown(
   <h2 style="margin:0;">❤️ Cardiovascular Health Risk Screener</h2>
   <div class="muted">
     A quick ML-based screening estimate using your inputs. <b>Not a diagnosis</b>.
-    Monthly lifestyle inputs are interpreted <b>per month</b>.
   </div>
 </div>
 """,
@@ -254,7 +253,6 @@ SEX_UI = ["Female", "Male"]
 AGE_UI = CATS["Age_Category"]
 
 with left:
-    # Removed the outer "card" box above Enter details (as requested)
     st.subheader("Enter details")
 
     tab_health, tab_body, tab_life = st.tabs(["Health", "Body", "Lifestyle (Monthly)"])
@@ -371,17 +369,6 @@ with left:
 
             with m3:
                 st.metric("BMI (auto)", f"{bmi:.2f}" if bmi is not None else "—")
-
-            if bmi is not None:
-                if bmi < 18.5:
-                    bmi_note = "Below typical range"
-                elif bmi < 25:
-                    bmi_note = "Typical range"
-                elif bmi < 30:
-                    bmi_note = "Above typical range"
-                else:
-                    bmi_note = "High range"
-                st.caption(f"BMI note: **{bmi_note}** (general guide only).")
 
         with tab_life:
             st.caption("All values below are interpreted **per month**.")
@@ -532,4 +519,4 @@ if submitted:
 # Footer
 # -------------------------
 st.markdown('<div class="hr"></div>', unsafe_allow_html=True)
-st.caption("")
+st.caption("A ML based Heart Disease Predictor")
