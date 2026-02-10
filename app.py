@@ -1,4 +1,4 @@
-# streamlit.py
+# app.py
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -19,7 +19,7 @@ st.title("❤️ Cardiovascular Health Risk Screener")
 st.caption("Risk screening tool (not a medical diagnosis). For educational use in your ML project demo.")
 
 st.info(
-    "This app estimates **heart disease risk** based on the trained ML model.\n\n"
+    "This app estimates **cardiovascular risk** based on your trained ML model.\n\n"
     "- It is **not** a medical diagnosis.\n"
     "- If someone is worried about their health, they should talk to a qualified healthcare professional."
 )
@@ -36,7 +36,7 @@ def load_model(path: str):
 if not os.path.exists(MODEL_PATH):
     st.error(
         "Model file not found.\n\n"
-        "✅ Fix: Put **cardiovascular_health_model.pkl** in the SAME folder as this streamlit.py file."
+        "✅ Fix: Put **cardiovascular_health_model.pkl** in the SAME folder as this app.py file."
     )
     st.stop()
 
@@ -57,8 +57,7 @@ def get_feature_columns(m) -> List[str]:
         if cols:
             return cols
 
-    # If you saved a pipeline with preprocessing, try sklearn feature names
-    # (works for some transformers that implement get_feature_names_out)
+    # Some sklearn objects implement get_feature_names_out
     try:
         if hasattr(m, "get_feature_names_out"):
             cols = list(m.get_feature_names_out())
@@ -67,10 +66,10 @@ def get_feature_columns(m) -> List[str]:
     except Exception:
         pass
 
-    # If pipeline, try last step / preprocessor step
+    # If pipeline, try transformer steps
     try:
         if hasattr(m, "named_steps"):
-            for step_name, step in m.named_steps.items():
+            for _step_name, step in m.named_steps.items():
                 if hasattr(step, "get_feature_names_out"):
                     cols = list(step.get_feature_names_out())
                     if cols:
@@ -85,8 +84,8 @@ feature_columns = get_feature_columns(model)
 if not feature_columns:
     st.error(
         "Could not detect the model's input feature names.\n\n"
-        "✅ Fix (recommended): when exporting your model, attach feature names:\n"
-        "model.feature_names_ = list(X_train.columns)  # before joblib.dump\n"
+        "✅ Fix (recommended): when exporting your model, attach feature names like:\n"
+        "model.feature_names_ = list(X_train.columns)  # before joblib.dump(...)"
     )
     st.stop()
 
@@ -101,15 +100,7 @@ def set_value(df: pd.DataFrame, col: str, value):
         df.at[0, col] = value
 
 def prettify_label(text: str) -> str:
-    return (
-        text.replace("_", " ")
-            .replace("  ", " ")
-            .strip()
-    )
-
-def is_binary_col(col: str) -> bool:
-    # common dummy/binary patterns
-    return col.endswith("_Yes") or col.endswith("_No") or col.endswith("_Positive") or col.endswith("_True") or col.endswith("_1")
+    return text.replace("_", " ").replace("  ", " ").strip()
 
 def infer_dummy_groups(columns: List[str]) -> Dict[str, List[str]]:
     """
@@ -129,29 +120,25 @@ def infer_dummy_groups(columns: List[str]) -> Dict[str, List[str]]:
     groups = {p: sorted(cols) for p, cols in groups.items() if len(cols) >= 2}
     return groups
 
-def set_one_hot(df: pd.DataFrame, prefix: str, chosen_value: str, group_cols: List[str], baseline_label: str = "(baseline)"):
-    # clear group
-    for c in group_cols:
-        df.at[0, c] = 0
-
-    if chosen_value == baseline_label:
-        return
-
-    target = f"{prefix}_{chosen_value}"
-    if target in df.columns:
-        df.at[0, target] = 1
+def is_binary_col(col: str) -> bool:
+    # common dummy/binary patterns
+    return (
+        col.endswith("_Yes")
+        or col.endswith("_No")
+        or col.endswith("_Positive")
+        or col.endswith("_True")
+        or col.endswith("_1")
+    )
 
 def get_numeric_cols(columns: List[str], dummy_groups: Dict[str, List[str]]) -> List[str]:
     dummy_cols = set()
     for cols in dummy_groups.values():
         dummy_cols.update(cols)
 
-    # numeric columns are those not in dummy groups and not obvious binary dummies
     numeric = []
     for c in columns:
         if c in dummy_cols:
             continue
-        # binary columns (single dummy) should be treated separately (selectbox)
         if is_binary_col(c):
             continue
         numeric.append(c)
@@ -170,6 +157,19 @@ def get_single_dummy_binaries(columns: List[str], dummy_groups: Dict[str, List[s
             binaries.append(c)
     return sorted(binaries)
 
+def set_one_hot(df: pd.DataFrame, prefix: str, chosen_value: str, group_cols: List[str], baseline_label: str = "(baseline)"):
+    # clear group
+    for c in group_cols:
+        df.at[0, c] = 0
+
+    # baseline => all zeros
+    if chosen_value == baseline_label:
+        return
+
+    target = f"{prefix}_{chosen_value}"
+    if target in df.columns:
+        df.at[0, target] = 1
+
 def safe_float(x, default=None):
     try:
         v = float(x)
@@ -180,7 +180,7 @@ def safe_float(x, default=None):
     return default
 
 # -------------------------
-# Build UI structure
+# Auto UI structure
 # -------------------------
 dummy_groups = infer_dummy_groups(feature_columns)
 numeric_cols = get_numeric_cols(feature_columns, dummy_groups)
@@ -189,25 +189,24 @@ binary_cols = get_single_dummy_binaries(feature_columns, dummy_groups)
 user_input = make_empty_input(feature_columns)
 
 # -------------------------
-# Sidebar: quick help
+# Sidebar: help + sanity info
 # -------------------------
 with st.sidebar:
     st.header("ℹ️ How to use")
     st.write(
         "1) Fill in inputs\n"
         "2) Click **Predict**\n"
-        "3) View risk + probability\n\n"
-        "Tip: If your model was trained with one-hot encoding (drop_first=True), "
-        "each dropdown includes a **(baseline)** option that represents “all zeros” for that category group."
+        "3) View prediction + probability\n\n"
+        "If your model used one-hot encoding with drop_first=True, "
+        "each dropdown includes a **(baseline)** option that means “all zeros”."
     )
     st.divider()
-    st.write("**Model file:** cardiovascular_health_model.pkl")
+    st.write(f"**Model file:** {MODEL_PATH}")
     st.write(f"**Detected features:** {len(feature_columns)}")
 
 # -------------------------
-# Input validation rules (simple + safe defaults)
+# Input validation rules (safe defaults)
 # -------------------------
-# You can add more rules if your dataset has known ranges
 RANGE_HINTS: Dict[str, Tuple[float, float, float]] = {
     "BMI": (10.0, 60.0, 25.0),
     "Height_(cm)": (120.0, 220.0, 170.0),
@@ -225,15 +224,12 @@ def numeric_widget(col: str):
     label = prettify_label(col)
     lo, hi, default = RANGE_HINTS.get(col, (0.0, 100.0, 0.0))
 
-    # if it looks like a "days" feature, give 0-30
     if "Days" in label and col not in RANGE_HINTS:
         lo, hi, default = 0.0, 30.0, 0.0
 
-    # if it looks like a "Consumption" feature, keep it reasonable
     if "Consumption" in label and col not in RANGE_HINTS:
         lo, hi, default = 0.0, 100.0, 0.0
 
-    # Use number_input (no crashes), clamp later
     val = st.number_input(
         label,
         min_value=float(lo),
@@ -246,36 +242,32 @@ def numeric_widget(col: str):
 
 def binary_widget(col: str):
     label = prettify_label(col)
-    # show friendly yes/no if column name hints it
-    options = [0, 1]
     display = {0: "No (0)", 1: "Yes (1)"}
-    choice = st.selectbox(label, options, format_func=lambda x: display[x], index=0)
+    choice = st.selectbox(label, [0, 1], format_func=lambda x: display[x], index=0)
     set_value(user_input, col, int(choice))
 
 def categorical_widget(prefix: str, group_cols: List[str]):
-    # dropdown values are the suffixes
     suffixes = [c.replace(prefix + "_", "") for c in group_cols]
     opts = ["(baseline)"] + suffixes
-
     chosen = st.selectbox(prettify_label(prefix), opts, index=0)
     set_one_hot(user_input, prefix, chosen, group_cols, baseline_label="(baseline)")
 
 def validate_inputs(df: pd.DataFrame) -> List[str]:
     errors = []
 
-    # Example validation: BMI shouldn't be 0 if present (common user mistake)
+    # Example validation: BMI must be > 0 if present
     if "BMI" in df.columns:
         bmi = safe_float(df.at[0, "BMI"], default=0.0)
-        if bmi <= 0:
+        if bmi is None or bmi <= 0:
             errors.append("BMI must be greater than 0.")
 
-    # Sleep hours reasonable if present
+    # Sleep hours 0-24 if present
     if "Sleep_Hours" in df.columns:
         sh = safe_float(df.at[0, "Sleep_Hours"], default=0.0)
-        if sh < 0 or sh > 24:
+        if sh is None or sh < 0 or sh > 24:
             errors.append("Sleep Hours must be between 0 and 24.")
 
-    # General numeric sanity: no NaN/inf
+    # No NaN / inf anywhere
     if not np.isfinite(df.to_numpy()).all():
         errors.append("Some inputs are invalid (NaN/Infinity). Please re-check your fields.")
 
@@ -289,7 +281,6 @@ with st.form("predict_form"):
 
     if numeric_cols:
         st.markdown("#### Numeric fields")
-        # nicer layout in 2 columns
         cols2 = st.columns(2)
         for i, col in enumerate(numeric_cols):
             with cols2[i % 2]:
@@ -297,7 +288,6 @@ with st.form("predict_form"):
 
     if dummy_groups:
         st.markdown("#### Categorical fields (dropdowns)")
-        # Show in a stable order
         for prefix in sorted(dummy_groups.keys()):
             categorical_widget(prefix, dummy_groups[prefix])
 
@@ -314,7 +304,6 @@ with st.form("predict_form"):
 # Predict (no crash + clear errors)
 # -------------------------
 if submitted:
-    # Input validation (user-facing)
     errs = validate_inputs(user_input)
     if errs:
         st.error("Please fix the following before predicting:")
@@ -322,48 +311,39 @@ if submitted:
             st.write(f"- {e}")
         st.stop()
 
-    # Predict safely
     try:
         pred = model.predict(user_input)[0]
+
         proba = None
+        classes = None
+        pos_idx = None
+
         if hasattr(model, "predict_proba"):
             proba = model.predict_proba(user_input)[0]
-
-        # Output formatting (friendly)
-        st.divider()
-        st.subheader("📌 Results")
-
-        # Determine positive class index (if available)
-        pos_idx = None
-        classes = None
-        if proba is not None:
             if hasattr(model, "classes_"):
                 classes = list(model.classes_)
-                # try find class "1"
                 if 1 in classes:
                     pos_idx = classes.index(1)
                 else:
-                    # fallback: assume second column is positive
                     pos_idx = 1 if len(classes) > 1 else 0
             else:
                 classes = [f"class_{i}" for i in range(len(proba))]
                 pos_idx = 1 if len(proba) > 1 else 0
 
-        # Show main prediction
-        pred_text = str(pred)
-        st.success(f"Prediction: **{pred_text}**")
+        st.divider()
+        st.subheader("📌 Results")
 
-        # If probability exists, show risk meter
+        st.success(f"Prediction: **{pred}**")
+
         if proba is not None and pos_idx is not None:
             risk = float(proba[pos_idx])
             st.metric("Estimated risk (positive class probability)", f"{risk:.3f}")
-
             st.progress(min(max(risk, 0.0), 1.0))
 
             if risk >= 0.70:
                 st.warning("High estimated risk. Consider follow-up screening and professional advice.")
             elif risk >= 0.40:
-                st.info("Moderate estimated risk. Lifestyle factors and check-ups may help reduce risk.")
+                st.info("Moderate estimated risk. Regular check-ups and healthier habits may help reduce risk.")
             else:
                 st.success("Lower estimated risk based on the model inputs.")
 
@@ -375,9 +355,9 @@ if submitted:
 
     except Exception as e:
         st.error(
-            "Prediction failed — usually caused by **feature mismatch** (your app input columns don’t match training columns).\n\n"
-            "✅ Fix: Re-export the model with embedded feature names and ensure Streamlit builds the same columns."
+            "Prediction failed — usually caused by **feature mismatch**.\n\n"
+            "✅ Fix: Re-export your model with embedded feature names and ensure Streamlit builds the same columns."
         )
         st.exception(e)
 
-st.caption("Model loaded from cardiovascular_health_model.pkl • App includes validation + user-facing errors • Built for smooth demo/testing")
+st.caption("Model: cardiovascular_health_model.pkl • Input validation + user-facing errors • Smooth demo-ready UI")
