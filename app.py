@@ -13,19 +13,9 @@ st.set_page_config(
     layout="wide"
 )
 
-# ------------------------------------------------------------
-# IMPORTANT: you said
-# - no runtime.txt
-# - python 3.13.0
-# - no models/ folder
-#
-# So:
-# 1) UI must ALWAYS load
-# 2) Model loading must be OPTIONAL and NEVER crash the app
-# 3) Default model path = file in the SAME folder as app.py
-# ------------------------------------------------------------
+# Model file (same folder as app.py)
 MODEL_FILENAME = "cardiovascular_health_model.pkl"
-MODEL_PATH = os.path.join(os.path.dirname(__file__), MODEL_FILENAME)  # same folder as app.py
+MODEL_PATH = os.path.join(os.path.dirname(__file__), MODEL_FILENAME)
 
 # -------------------------
 # Known categories (stable one-hot alignment)
@@ -64,15 +54,14 @@ def expected_dummy_columns():
     cols = []
     cols.extend(NUM_COLS)
     for col in CAT_COLS:
-        # drop_first=True behaviour: skip first category
-        for cat in CATS[col][1:]:
+        for cat in CATS[col][1:]:  # drop_first=True
             cols.append(f"{col}_{cat}")
     return cols
 
 EXPECTED_COLS = expected_dummy_columns()
 
 # -------------------------
-# Helpers (safe; never crash UI)
+# Helpers (never crash UI)
 # -------------------------
 def show_env_versions():
     st.caption(
@@ -88,21 +77,20 @@ def safe_float(x):
         return None
 
 @st.cache_resource(show_spinner=False)
-def try_load_model(path: str):
+def safe_try_load_model(path: str):
     """
-    Non-fatal model loader:
-    Returns (model_or_None, error_string_or_None).
-    UI will ALWAYS load even if model can't be loaded (common on Python 3.13).
+    Never raises. Never stops the app. Never prints giant traceback.
+    Returns: (model_or_None, short_status_message)
     """
     if not os.path.exists(path):
-        return None, f"Model file not found at: {path}"
+        return None, f"Model file not found: {os.path.basename(path)} (expected next to app.py)"
 
     try:
         m = joblib.load(path)
-        return m, None
+        return m, "Model loaded successfully."
     except Exception as e:
-        # Common on cloud Python 3.13 with older numpy pickles
-        return None, f"{type(e).__name__}: {e}"
+        # Keep it short (no st.exception)
+        return None, f"Model failed to load in this cloud runtime: {type(e).__name__}: {e}"
 
 def validate_inputs(h_cm, w_kg, bmi, alcohol, fruit, veg, fried):
     errors = []
@@ -125,7 +113,6 @@ def validate_inputs(h_cm, w_kg, bmi, alcohol, fruit, veg, fried):
 def encode_like_training(raw_df: pd.DataFrame) -> pd.DataFrame:
     for col in CAT_COLS:
         raw_df[col] = pd.Categorical(raw_df[col], categories=CATS[col], ordered=True)
-
     encoded = pd.get_dummies(raw_df, drop_first=True)
     aligned = encoded.reindex(columns=EXPECTED_COLS, fill_value=0)
     return aligned.astype(float)
@@ -146,8 +133,7 @@ st.title("❤️ Cardiovascular Health Risk Screener")
 st.caption("Risk screening only — not a medical diagnosis.")
 show_env_versions()
 
-# Try load model (optional; non-fatal)
-model, model_err = try_load_model(MODEL_PATH)
+model, model_status = safe_try_load_model(MODEL_PATH)
 
 with st.expander("Important note", expanded=True):
     st.write(
@@ -156,15 +142,15 @@ with st.expander("Important note", expanded=True):
         "- If you have concerns, seek advice from a qualified healthcare professional."
     )
 
-# Model status banner (won't block UI)
+# Model banner (no traceback)
 if model is None:
-    st.warning("Model is NOT loaded — UI is working, but prediction is disabled for now.")
-    with st.expander("Model load details (debug)"):
-        st.code(model_err)
-        st.write("Current expected model file location:")
+    st.warning("Model not loaded yet — UI works, prediction is disabled for now.")
+    with st.expander("Model status (debug)"):
+        st.write(model_status)
+        st.write("Expected model location:")
         st.code(MODEL_PATH)
-        st.write("If you want it to load locally, put the model file next to app.py:")
-        st.code(f"{MODEL_FILENAME}")
+else:
+    st.success("Model loaded — prediction enabled.")
 
 left, right = st.columns([1.05, 0.95], gap="large")
 
@@ -256,7 +242,7 @@ with right:
                 st.write(f"- {e}")
 
         elif model is None:
-            st.error("Prediction disabled (model not loaded). UI is working — we’ll fix model later.")
+            st.error("Prediction disabled (model not loaded).")
 
         else:
             raw_df = pd.DataFrame([{
@@ -285,9 +271,8 @@ with right:
                 prob = predict_proba_1(model, X_input)
                 label = "Higher risk" if prob >= 0.5 else "Lower risk"
                 st.session_state.last_result = {"prob": prob, "label": label, "X": X_input}
-            except Exception as e:
-                st.error("Prediction failed (we will fix model/features later).")
-                st.exception(e)
+            except Exception:
+                st.error("Prediction failed (model/features mismatch).")
 
     res = st.session_state.last_result
     if res is None:
@@ -304,4 +289,4 @@ with right:
             st.dataframe(res["X"], use_container_width=True)
 
 st.markdown("---")
-st.caption(f"Model path: {MODEL_PATH} • App: app.py")
+st.caption(f"Model file: {MODEL_FILENAME} • App: app.py")
