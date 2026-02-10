@@ -64,7 +64,7 @@ def expected_dummy_columns():
 EXPECTED_COLS = expected_dummy_columns()
 
 # -------------------------
-# Styling (clean, modern, rubric-friendly)
+# Styling 
 # -------------------------
 st.markdown(
     """
@@ -142,10 +142,10 @@ def validate_inputs(h_cm, w_kg, bmi, alcohol, fruit, veg, fried):
 
     # Monthly consumption (cannot be negative; keep reasonable upper bounds)
     bounds = [
-        ("Alcohol (drinks/month)", alcohol, 300),
-        ("Fruit (servings/month)", fruit, 300),
-        ("Green vegetables (servings/month)", veg, 300),
-        ("Fried potatoes (servings/month)", fried, 300),
+        ("Alcohol (drinks/month)", alcohol, 200),
+        ("Fruit (servings/month)", fruit, 200),
+        ("Green vegetables (servings/month)", veg, 200),
+        ("Fried potatoes (servings/month)", fried, 200),
     ]
     for name, val, hi in bounds:
         if val is None or val < 0:
@@ -187,7 +187,7 @@ def pretty_pct(prob: float) -> str:
 
 
 # -------------------------
-# Header (kept, but removed the extra "Important" card)
+# Header 
 # -------------------------
 st.markdown(
     """
@@ -414,7 +414,6 @@ with left:
         submitted = st.form_submit_button("Predict risk", use_container_width=True)
 
 with right:
-    # Removed the outer "card" box above Results (as requested)
     st.subheader("Results")
 
     if st.session_state.last_result is None:
