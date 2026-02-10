@@ -1,304 +1,326 @@
 # app.py
 import os
-import joblib
 import numpy as np
 import pandas as pd
+import joblib
 import streamlit as st
 
-# =========================================================
-# CONFIG
-# =========================================================
-APP_TITLE = "❤️ Cardiovascular Health Risk Screener"
-MODEL_PATH = "cardiovascular_health_model.pkl"
-DATA_PATH = "CVD_cleaned.csv"          # used to rebuild exact dummy columns (same as training)
-TARGET_COL = "Heart_Disease"           # must match your notebook
-
-# =========================================================
-# PAGE SETUP
-# =========================================================
-st.set_page_config(page_title=APP_TITLE, page_icon="❤️", layout="centered")
-st.title(APP_TITLE)
-st.caption("Risk screening tool (not a medical diagnosis). For educational demo use.")
-
-st.info(
-    "This app estimates **cardiovascular risk** using your trained ML model.\n\n"
-    "- **Not a medical diagnosis**\n"
-    "- For real concerns, consult a qualified healthcare professional."
+# -------------------------
+# Config
+# -------------------------
+st.set_page_config(
+    page_title="Cardiovascular Health Risk Screener",
+    page_icon="❤️",
+    layout="wide",
 )
 
-# =========================================================
-# LOAD MODEL + BUILD FEATURE TEMPLATE FROM TRAINING DATA
-# =========================================================
-@st.cache_resource
+MODEL_PATH = "cardiovascular_health_model.pkl"
+
+# -------------------------
+# Helpers
+# -------------------------
 def load_model(path: str):
-    return joblib.load(path)
+    if not os.path.exists(path):
+        st.error(f"Model file not found: {path}\n\nMake sure '{MODEL_PATH}' is in the same folder as app.py.")
+        st.stop()
+    try:
+        return joblib.load(path)
+    except Exception as e:
+        st.error("Failed to load the model. The file may be corrupted or incompatible.")
+        st.exception(e)
+        st.stop()
 
-@st.cache_data
-def load_training_data(path: str) -> pd.DataFrame:
-    return pd.read_csv(path)
+def get_expected_feature_columns(model):
+    # Best case: sklearn estimators fitted on a DataFrame store feature_names_in_
+    cols = getattr(model, "feature_names_in_", None)
+    if cols is not None:
+        return list(cols)
 
-@st.cache_data
-def build_template_columns(df: pd.DataFrame) -> tuple[list[str], list[str], list[str], dict[str, list[str]]]:
-    """
-    Rebuild the EXACT one-hot encoded feature columns using the same approach used in your notebook:
-      X = df.drop(["Heart_Disease"])
-      X = pd.get_dummies(X, drop_first=True)
-
-    Returns:
-      feature_columns: columns expected by the model
-      numeric_cols: raw numeric input cols (before dummies)
-      categorical_cols: raw categorical input cols (before dummies)
-      cat_options: mapping of categorical col -> sorted unique options (strings)
-    """
-    if TARGET_COL not in df.columns:
-        raise ValueError(f"Dataset is missing target column: {TARGET_COL}")
-
-    raw_X = df.drop(columns=[TARGET_COL]).copy()
-
-    # Identify raw numeric vs categorical
-    numeric_cols = raw_X.select_dtypes(include=[np.number]).columns.tolist()
-    categorical_cols = [c for c in raw_X.columns if c not in numeric_cols]
-
-    # Build options for categorical fields (sorted, stable)
-    cat_options = {}
-    for c in categorical_cols:
-        # keep as string to avoid Streamlit weirdness with mixed types
-        opts = sorted(raw_X[c].dropna().astype(str).unique().tolist())
-        cat_options[c] = opts
-
-    # Build template dummy columns exactly as training
-    X_template = pd.get_dummies(raw_X, drop_first=True)
-    feature_columns = X_template.columns.tolist()
-
-    return feature_columns, numeric_cols, categorical_cols, cat_options
-
-# Guardrails: files exist
-if not os.path.exists(MODEL_PATH):
+    # Fallback: some models store n_features_in_ but not names
     st.error(
-        f"Model file not found: **{MODEL_PATH}**\n\n"
-        "✅ Fix: Put `cardiovascular_health_model.pkl` in the same folder as `app.py`."
+        "This model does not contain feature names (feature_names_in_ missing). "
+        "Re-train using a pandas DataFrame so feature names are preserved."
     )
     st.stop()
 
-if not os.path.exists(DATA_PATH):
-    st.error(
-        f"Dataset file not found: **{DATA_PATH}**\n\n"
-        "This app uses your training CSV to rebuild the exact one-hot columns (because the model does not store feature names).\n"
-        "✅ Fix: Put `CVD_cleaned.csv` in the same folder as `app.py` (and include it in GitHub for deployment)."
-    )
-    st.stop()
+def safe_float(x):
+    try:
+        return float(x)
+    except Exception:
+        return None
 
-# Load resources
-try:
-    model = load_model(MODEL_PATH)
-except Exception as e:
-    st.error("Failed to load the model. The .pkl may be corrupted or saved incorrectly.")
-    st.exception(e)
-    st.stop()
-
-try:
-    df_train = load_training_data(DATA_PATH)
-    feature_columns, numeric_cols, categorical_cols, cat_options = build_template_columns(df_train)
-except Exception as e:
-    st.error("Failed to load dataset / build feature template columns.")
-    st.exception(e)
-    st.stop()
-
-# =========================================================
-# SIDEBAR
-# =========================================================
-with st.sidebar:
-    st.header("ℹ️ Quick info")
-    st.write(f"**Model:** `{MODEL_PATH}`")
-    st.write(f"**Template CSV:** `{DATA_PATH}`")
-    st.write(f"**Raw input fields:** {len(numeric_cols) + len(categorical_cols)}")
-    st.write(f"**Model features (after one-hot):** {len(feature_columns)}")
-    st.divider()
-    st.write(
-        "If your model does **not** include feature names, this is the safest method:\n"
-        "- Use the same CSV structure\n"
-        "- Rebuild one-hot columns with `drop_first=True`\n"
-        "- Align to the template columns before predicting"
-    )
-
-# =========================================================
-# INPUT VALIDATION RULES (safe + user-friendly)
-# =========================================================
-RANGE_HINTS = {
-    # Common CVD fields (only applied if those columns exist)
-    "BMI": (10.0, 60.0, 25.0),
-    "Sleep_Hours": (0.0, 24.0, 7.0),
-    "Physical_Health_Days": (0.0, 30.0, 0.0),
-    "Mental_Health_Days": (0.0, 30.0, 0.0),
-}
-
-def validate_raw_inputs(raw_row: dict) -> list[str]:
+def validate_inputs(h_cm, w_kg, bmi, alcohol, fruit, veg, fried):
     errors = []
 
-    if "BMI" in raw_row:
-        try:
-            if float(raw_row["BMI"]) <= 0:
-                errors.append("BMI must be greater than 0.")
-        except Exception:
-            errors.append("BMI must be a valid number.")
+    if h_cm is None or h_cm <= 0:
+        errors.append("Height must be a positive number.")
+    elif h_cm < 100 or h_cm > 230:
+        errors.append("Height looks unusual. Enter a value between 100 and 230 cm.")
 
-    if "Sleep_Hours" in raw_row:
-        try:
-            sh = float(raw_row["Sleep_Hours"])
-            if sh < 0 or sh > 24:
-                errors.append("Sleep Hours must be between 0 and 24.")
-        except Exception:
-            errors.append("Sleep Hours must be a valid number.")
+    if w_kg is None or w_kg <= 0:
+        errors.append("Weight must be a positive number.")
+    elif w_kg < 25 or w_kg > 300:
+        errors.append("Weight looks unusual. Enter a value between 25 and 300 kg.")
 
-    # Generic numeric checks
-    for c in numeric_cols:
-        v = raw_row.get(c, None)
-        if v is None:
-            continue
-        try:
-            fv = float(v)
-            if not np.isfinite(fv):
-                errors.append(f"{c} is invalid (NaN/Infinity).")
-        except Exception:
-            errors.append(f"{c} must be a valid number.")
+    if bmi is None or bmi <= 0:
+        errors.append("BMI must be a positive number.")
+    elif bmi < 10 or bmi > 60:
+        errors.append("BMI looks unusual. Enter a value between 10 and 60.")
+
+    # Consumption fields: allow 0 and up
+    for name, val, hi in [
+        ("Alcohol consumption", alcohol, 200),
+        ("Fruit consumption", fruit, 50),
+        ("Green vegetables consumption", veg, 50),
+        ("Fried potato consumption", fried, 50),
+    ]:
+        if val is None or val < 0:
+            errors.append(f"{name} must be 0 or more.")
+        elif val > hi:
+            errors.append(f"{name} looks too high. Enter a value less than or equal to {hi}.")
 
     return errors
 
-# =========================================================
-# BUILD UI (highly interactive + responsive)
-# =========================================================
-st.subheader("🧾 Enter details")
+def build_raw_input_row(
+    general_health,
+    checkup,
+    exercise,
+    skin_cancer,
+    other_cancer,
+    depression,
+    diabetes,
+    arthritis,
+    sex,
+    age_category,
+    smoking_history,
+    height_cm,
+    weight_kg,
+    bmi,
+    alcohol,
+    fruit,
+    veg,
+    fried_potato,
+):
+    # Column names must match the original dataset BEFORE get_dummies
+    return pd.DataFrame([{
+        "General_Health": general_health,
+        "Checkup": checkup,
+        "Exercise": exercise,
+        "Skin_Cancer": skin_cancer,
+        "Other_Cancer": other_cancer,
+        "Depression": depression,
+        "Diabetes": diabetes,
+        "Arthritis": arthritis,
+        "Sex": sex,
+        "Age_Category": age_category,
+        "Smoking_History": smoking_history,
+        "Height_(cm)": height_cm,
+        "Weight_(kg)": weight_kg,
+        "BMI": bmi,
+        "Alcohol_Consumption": alcohol,
+        "Fruit_Consumption": fruit,
+        "Green_Vegetables_Consumption": veg,
+        "FriedPotato_Consumption": fried_potato,
+    }])
 
-raw_input = {}
+def encode_like_training(raw_df: pd.DataFrame, expected_cols: list[str]) -> pd.DataFrame:
+    # Training used: pd.get_dummies(X, drop_first=True) on ALL predictors
+    encoded = pd.get_dummies(raw_df, drop_first=True)
 
-with st.form("predict_form", clear_on_submit=False):
-    # ---------- Numeric ----------
-    if numeric_cols:
-        st.markdown("### Numeric fields")
-        colA, colB = st.columns(2)
-        for i, c in enumerate(numeric_cols):
-            lo, hi, default = RANGE_HINTS.get(c, (0.0, 100.0, 0.0))
-            label = c.replace("_", " ")
+    # Align to model expected columns (missing -> 0)
+    aligned = encoded.reindex(columns=expected_cols, fill_value=0)
 
-            container = colA if i % 2 == 0 else colB
-            with container:
-                raw_input[c] = st.number_input(
-                    label,
-                    min_value=float(lo),
-                    max_value=float(hi),
-                    value=float(default),
-                    step=1.0 if (hi - lo) >= 10 else 0.5,
-                    help=f"Expected range: {lo} to {hi}",
-                )
+    # Ensure numeric dtype
+    return aligned.astype(float)
 
-    # ---------- Categorical ----------
-    if categorical_cols:
-        st.markdown("### Categorical fields (dropdowns)")
-        for c in categorical_cols:
-            opts = cat_options.get(c, [])
-            if not opts:
-                # fallback
-                opts = ["(unknown)"]
+# -------------------------
+# Load model & expected cols
+# -------------------------
+model = load_model(MODEL_PATH)
+expected_cols = get_expected_feature_columns(model)
 
-            # drop_first=True baseline is the first category in sorted order
-            baseline = opts[0]
-            baseline_label = f"(baseline: {baseline})"
-            display_opts = [baseline_label] + opts[1:]
+# -------------------------
+# UI
+# -------------------------
+st.title("❤️ Cardiovascular Health Risk Screener")
+st.caption("A simple risk screening tool. Not a medical diagnosis.")
 
-            choice = st.selectbox(
-                c.replace("_", " "),
-                options=display_opts,
-                index=0,
-                help="Baseline represents the dropped first category used in one-hot encoding (drop_first=True).",
-            )
-            if choice == baseline_label:
-                raw_input[c] = baseline
-            else:
-                raw_input[c] = choice
+with st.expander("Important note", expanded=True):
+    st.write(
+        "- This app estimates risk based on a machine learning model.\n"
+        "- It is **not** a diagnosis.\n"
+        "- If you are worried about symptoms or health, talk to a qualified healthcare professional."
+    )
 
-    submitted = st.form_submit_button("✅ Predict")
+left, right = st.columns([1.05, 0.95], gap="large")
 
-# =========================================================
-# TRANSFORM + PREDICT (no crash + clear user errors)
-# =========================================================
-if submitted:
-    errs = validate_raw_inputs(raw_input)
-    if errs:
-        st.error("Please fix the following before predicting:")
-        for e in errs:
-            st.write(f"- {e}")
-        st.stop()
+with left:
+    st.subheader("1) Enter your details")
 
+    GENERAL_HEALTH = ["Excellent", "Very Good", "Good", "Fair", "Poor"]
+    CHECKUP = [
+        "Within the past year",
+        "Within the past 2 years",
+        "Within the past 5 years",
+        "5 or more years ago",
+        "Never",
+    ]
+    YES_NO = ["No", "Yes"]
+    SEX = ["Female", "Male"]
+    AGE_CATEGORY = [
+        "18-24", "25-29", "30-34", "35-39", "40-44", "45-49",
+        "50-54", "55-59", "60-64", "65-69", "70-74", "75-79", "80+"
+    ]
+
+    with st.form("risk_form", clear_on_submit=False):
+        c1, c2 = st.columns(2)
+
+        with c1:
+            general_health = st.selectbox("General health", GENERAL_HEALTH, index=2)
+            checkup = st.selectbox("Last medical checkup", CHECKUP, index=0)
+            age_category = st.selectbox("Age group", AGE_CATEGORY, index=0)
+            sex = st.selectbox("Sex", SEX, index=0)
+
+        with c2:
+            exercise = st.selectbox("Do you exercise?", YES_NO, index=1)
+            smoking_history = st.selectbox("Smoking history", YES_NO, index=0)
+            diabetes = st.selectbox("Diabetes", YES_NO, index=0)
+            depression = st.selectbox("Depression", YES_NO, index=0)
+
+        c3, c4 = st.columns(2)
+        with c3:
+            skin_cancer = st.selectbox("Skin cancer", YES_NO, index=0)
+            other_cancer = st.selectbox("Other cancer", YES_NO, index=0)
+        with c4:
+            arthritis = st.selectbox("Arthritis", YES_NO, index=0)
+
+        st.markdown("---")
+        st.subheader("Body measurements")
+
+        m1, m2, m3 = st.columns(3)
+        with m1:
+            height_cm_in = st.text_input("Height (cm)", value="170")
+        with m2:
+            weight_kg_in = st.text_input("Weight (kg)", value="70")
+        with m3:
+            bmi_mode = st.radio("BMI", ["Auto-calculate", "Enter manually"], horizontal=True, index=0)
+
+        height_cm = safe_float(height_cm_in)
+        weight_kg = safe_float(weight_kg_in)
+
+        if bmi_mode == "Auto-calculate" and height_cm and weight_kg and height_cm > 0:
+            bmi_val = weight_kg / ((height_cm / 100.0) ** 2)
+            bmi_in = st.text_input("BMI (auto)", value=f"{bmi_val:.2f}", disabled=True)
+            bmi = bmi_val
+        else:
+            bmi_in = st.text_input("BMI", value="24.2")
+            bmi = safe_float(bmi_in)
+
+        st.markdown("---")
+        st.subheader("Diet & lifestyle (numbers)")
+
+        d1, d2, d3, d4 = st.columns(4)
+        with d1:
+            alcohol_in = st.text_input("Alcohol consumption", value="0")
+        with d2:
+            fruit_in = st.text_input("Fruit consumption", value="1")
+        with d3:
+            veg_in = st.text_input("Green vegetables consumption", value="1")
+        with d4:
+            fried_in = st.text_input("Fried potato consumption", value="0")
+
+        alcohol = safe_float(alcohol_in)
+        fruit = safe_float(fruit_in)
+        veg = safe_float(veg_in)
+        fried = safe_float(fried_in)
+
+        submitted = st.form_submit_button("Predict risk")
+
+with right:
+    st.subheader("2) Results")
+
+    if "last_result" not in st.session_state:
+        st.session_state.last_result = None
+
+    if "submitted_flag" not in st.session_state:
+        st.session_state.submitted_flag = False
+
+    # When form submits, Streamlit reruns; detect with the local variable
     try:
-        # Build 1-row raw DataFrame with the SAME raw columns as training
-        raw_df = pd.DataFrame([raw_input])
+        submitted
+    except NameError:
+        submitted = False
 
-        # Ensure any missing raw columns (rare) are added with safe defaults
-        raw_expected_cols = df_train.drop(columns=[TARGET_COL]).columns.tolist()
-        for c in raw_expected_cols:
-            if c not in raw_df.columns:
-                # numeric -> 0, categorical -> baseline if known else empty string
-                if c in numeric_cols:
-                    raw_df[c] = 0.0
+    if submitted:
+        errs = validate_inputs(height_cm, weight_kg, bmi, alcohol, fruit, veg, fried)
+        if errs:
+            st.error("Please fix these before predicting:")
+            for e in errs:
+                st.write(f"- {e}")
+        else:
+            raw_df = build_raw_input_row(
+                general_health=general_health,
+                checkup=checkup,
+                exercise=exercise,
+                skin_cancer=skin_cancer,
+                other_cancer=other_cancer,
+                depression=depression,
+                diabetes=diabetes,
+                arthritis=arthritis,
+                sex=sex,
+                age_category=age_category,
+                smoking_history=smoking_history,
+                height_cm=float(height_cm),
+                weight_kg=float(weight_kg),
+                bmi=float(bmi),
+                alcohol=float(alcohol),
+                fruit=float(fruit),
+                veg=float(veg),
+                fried_potato=float(fried),
+            )
+
+            try:
+                X_input = encode_like_training(raw_df, expected_cols)
+
+                # Predict probability of class 1 (Yes / has heart disease)
+                if hasattr(model, "predict_proba"):
+                    prob = float(model.predict_proba(X_input)[0, 1])
                 else:
-                    opts = cat_options.get(c, [""])
-                    raw_df[c] = opts[0] if opts else ""
+                    # Fallback if no predict_proba (unlikely here)
+                    pred = int(model.predict(X_input)[0])
+                    prob = 1.0 if pred == 1 else 0.0
 
-        raw_df = raw_df[raw_expected_cols]  # exact order
+                pred_label = "Higher risk" if prob >= 0.5 else "Lower risk"
+                st.session_state.last_result = {"prob": prob, "label": pred_label}
+            except Exception as e:
+                st.error("Prediction failed due to input/feature mismatch.")
+                st.exception(e)
 
-        # One-hot encode same as training
-        X_live = pd.get_dummies(raw_df, drop_first=True)
+    res = st.session_state.last_result
+    if res is None:
+        st.info("Fill in the form and click **Predict risk** to see results.")
+    else:
+        prob = res["prob"]
+        label = res["label"]
 
-        # Align to template columns (critical to avoid mismatch)
-        X_live = X_live.reindex(columns=feature_columns, fill_value=0)
+        st.metric("Risk level", label)
+        st.write(f"Estimated probability: **{prob*100:.1f}%**")
+        st.progress(min(max(prob, 0.0), 1.0))
 
-        # Final safety: ensure numeric dtype
-        X_live = X_live.astype(float)
-
-        # Predict
-        pred = model.predict(X_live)[0]
-
-        st.divider()
-        st.subheader("📌 Results")
-        st.success(f"Prediction: **{pred}**")
-
-        # Probabilities + risk bar
-        if hasattr(model, "predict_proba"):
-            proba = model.predict_proba(X_live)[0]
-
-            classes = list(model.classes_) if hasattr(model, "classes_") else [f"class_{i}" for i in range(len(proba))]
-
-            # Try to pick positive class intelligently (1 if present else second column)
-            if 1 in classes:
-                pos_idx = classes.index(1)
-            else:
-                pos_idx = 1 if len(classes) > 1 else 0
-
-            risk = float(proba[pos_idx])
-            st.metric("Estimated risk (positive class probability)", f"{risk:.3f}")
-            st.progress(min(max(risk, 0.0), 1.0))
-
-            if risk >= 0.70:
-                st.warning("High estimated risk. Consider follow-up screening and professional advice.")
-            elif risk >= 0.40:
-                st.info("Moderate estimated risk. Regular check-ups and healthier habits may help reduce risk.")
-            else:
-                st.success("Lower estimated risk based on the model inputs.")
-
-            st.markdown("**Prediction probabilities:**")
-            st.dataframe(pd.DataFrame([proba], columns=classes), use_container_width=True)
-
-        with st.expander("Show full transformed model input (debug)"):
-            st.dataframe(X_live, use_container_width=True)
-
-    except Exception as e:
-        st.error(
-            "Prediction failed.\n\n"
-            "Common causes:\n"
-            "- Model expects different columns than the training CSV\n"
-            "- Training CSV is not the same one used when the model was trained\n\n"
-            "✅ Fix: Use the same `CVD_cleaned.csv` you trained on, and redeploy."
+        st.markdown("---")
+        st.subheader("What you can do next")
+        st.write(
+            "- If your risk looks high, consider a proper health checkup.\n"
+            "- Focus on healthy habits (exercise, balanced diet, sleep).\n"
+            "- If you have concerning symptoms, seek medical advice."
         )
-        st.exception(e)
 
-st.caption("Uses training CSV to rebuild dummy columns (drop_first=True) • Includes validation + friendly errors • Demo-ready")
+        with st.expander("Show the processed inputs (for debugging)"):
+            # Show the aligned features used by the model
+            try:
+                st.dataframe(X_input, use_container_width=True)
+            except Exception:
+                st.write("Processed features unavailable.")
+
+st.markdown("---")
+st.caption("Model file: cardiovascular_health_model.pkl | App file: app.py")
