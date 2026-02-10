@@ -4,21 +4,14 @@ import joblib
 import numpy as np
 import pandas as pd
 import streamlit as st
+import sklearn
+import sys
 
-# -------------------------
-# Page config
-# -------------------------
-st.set_page_config(
-    page_title="Cardiovascular Health Risk Screener",
-    page_icon="❤️",
-    layout="wide",
-)
-
+st.set_page_config(page_title="Cardiovascular Health Risk Screener", page_icon="❤️", layout="wide")
 MODEL_PATH = "cardiovascular_health_model.pkl"
 
 # -------------------------
-# Known categories (from your file)
-# We force these so get_dummies produces the same columns every time.
+# Known categories (force stable one-hot)
 # -------------------------
 CATS = {
     "General_Health": ["Excellent", "Fair", "Good", "Poor", "Very Good"],
@@ -44,28 +37,17 @@ CATS = {
 }
 
 NUM_COLS = [
-    "Height_(cm)",
-    "Weight_(kg)",
-    "BMI",
-    "Alcohol_Consumption",
-    "Fruit_Consumption",
-    "Green_Vegetables_Consumption",
-    "FriedPotato_Consumption",
+    "Height_(cm)", "Weight_(kg)", "BMI",
+    "Alcohol_Consumption", "Fruit_Consumption",
+    "Green_Vegetables_Consumption", "FriedPotato_Consumption",
 ]
-
 CAT_COLS = list(CATS.keys())
 
 def expected_dummy_columns():
-    """
-    Build the full expected model input column list (numeric + one-hot),
-    matching pd.get_dummies(..., drop_first=True) behavior.
-    """
     cols = []
     cols.extend(NUM_COLS)
-
     for col in CAT_COLS:
-        # drop_first=True drops the first category in the category order we enforce
-        for cat in CATS[col][1:]:
+        for cat in CATS[col][1:]:  # drop_first=True
             cols.append(f"{col}_{cat}")
     return cols
 
@@ -80,6 +62,13 @@ def safe_float(x):
     except Exception:
         return None
 
+def show_env_versions():
+    st.caption(
+        f"Runtime versions — Python: {sys.version.split()[0]} | "
+        f"NumPy: {np.__version__} | pandas: {pd.__version__} | "
+        f"scikit-learn: {sklearn.__version__} | joblib: {joblib.__version__}"
+    )
+
 def load_model(path: str):
     if not os.path.exists(path):
         st.error(f"Model file not found: {path}\n\nPut '{MODEL_PATH}' in the same folder as app.py.")
@@ -88,12 +77,18 @@ def load_model(path: str):
         return joblib.load(path)
     except Exception as e:
         st.error("Failed to load the model file.")
+        show_env_versions()
+        st.warning(
+            "This usually happens when the model was saved under a different Python/NumPy/scikit-learn version.\n\n"
+            "Fix:\n"
+            "1) Add a requirements.txt to pin versions (recommended)\n"
+            "2) Or re-save the model using the same versions as this runtime."
+        )
         st.exception(e)
         st.stop()
 
 def validate_inputs(h_cm, w_kg, bmi, alcohol, fruit, veg, fried):
     errors = []
-
     if h_cm is None or h_cm <= 0:
         errors.append("Height must be a positive number.")
     elif h_cm < 100 or h_cm > 230:
@@ -121,65 +116,22 @@ def validate_inputs(h_cm, w_kg, bmi, alcohol, fruit, veg, fried):
             errors.append(f"{name} looks too high. Use ≤ {hi}.")
     return errors
 
-def build_raw_input_row(
-    general_health,
-    checkup,
-    exercise,
-    skin_cancer,
-    other_cancer,
-    depression,
-    diabetes,
-    arthritis,
-    sex,
-    age_category,
-    smoking_history,
-    height_cm,
-    weight_kg,
-    bmi,
-    alcohol,
-    fruit,
-    veg,
-    fried_potato,
-):
-    return pd.DataFrame([{
-        "General_Health": general_health,
-        "Checkup": checkup,
-        "Exercise": exercise,
-        "Skin_Cancer": skin_cancer,
-        "Other_Cancer": other_cancer,
-        "Depression": depression,
-        "Diabetes": diabetes,
-        "Arthritis": arthritis,
-        "Sex": sex,
-        "Age_Category": age_category,
-        "Smoking_History": smoking_history,
-        "Height_(cm)": height_cm,
-        "Weight_(kg)": weight_kg,
-        "BMI": bmi,
-        "Alcohol_Consumption": alcohol,
-        "Fruit_Consumption": fruit,
-        "Green_Vegetables_Consumption": veg,
-        "FriedPotato_Consumption": fried_potato,
-    }])
+def build_raw_input_row(**kwargs):
+    return pd.DataFrame([kwargs])
 
 def encode_like_training(raw_df: pd.DataFrame) -> pd.DataFrame:
-    # Force category order to guarantee stable one-hot columns
     for col in CAT_COLS:
         raw_df[col] = pd.Categorical(raw_df[col], categories=CATS[col], ordered=True)
-
     encoded = pd.get_dummies(raw_df, drop_first=True)
     aligned = encoded.reindex(columns=EXPECTED_COLS, fill_value=0)
     return aligned.astype(float)
 
 def predict_proba_1(model, X: pd.DataFrame) -> float:
-    # Return probability of class "1" if possible
     if hasattr(model, "predict_proba"):
         proba = model.predict_proba(X)
-        # Handle binary classifiers (n_samples, 2)
         if isinstance(proba, np.ndarray) and proba.shape[1] >= 2:
             return float(proba[0, 1])
         return float(proba[0])
-    # Fallback
     pred = int(model.predict(X)[0])
     return 1.0 if pred == 1 else 0.0
 
@@ -193,6 +145,7 @@ model = load_model(MODEL_PATH)
 # -------------------------
 st.title("❤️ Cardiovascular Health Risk Screener")
 st.caption("Risk screening only — not a medical diagnosis.")
+show_env_versions()
 
 with st.expander("Important note", expanded=True):
     st.write(
@@ -206,15 +159,8 @@ left, right = st.columns([1.05, 0.95], gap="large")
 with left:
     st.subheader("1) Enter your details")
 
-    # Use the same options as CATS (friendly ordering)
     GENERAL_HEALTH_UI = ["Excellent", "Very Good", "Good", "Fair", "Poor"]
-    CHECKUP_UI = [
-        "Within the past year",
-        "Within the past 2 years",
-        "Within the past 5 years",
-        "5 or more years ago",
-        "Never",
-    ]
+    CHECKUP_UI = ["Within the past year", "Within the past 2 years", "Within the past 5 years", "5 or more years ago", "Never"]
     YES_NO = ["No", "Yes"]
     SEX_UI = ["Female", "Male"]
     AGE_UI = CATS["Age_Category"]
@@ -297,30 +243,31 @@ with right:
                 st.write(f"- {e}")
         else:
             raw_df = build_raw_input_row(
-                general_health=general_health,
-                checkup=checkup,
-                exercise=exercise,
-                skin_cancer=skin_cancer,
-                other_cancer=other_cancer,
-                depression=depression,
-                diabetes=diabetes,
-                arthritis=arthritis,
-                sex=sex,
-                age_category=age_category,
-                smoking_history=smoking_history,
-                height_cm=float(height_cm),
-                weight_kg=float(weight_kg),
-                bmi=float(bmi),
-                alcohol=float(alcohol),
-                fruit=float(fruit),
-                veg=float(veg),
-                fried_potato=float(fried),
+                General_Health=general_health,
+                Checkup=checkup,
+                Exercise=exercise,
+                Skin_Cancer=skin_cancer,
+                Other_Cancer=other_cancer,
+                Depression=depression,
+                Diabetes=diabetes,
+                Arthritis=arthritis,
+                Sex=sex,
+                Age_Category=age_category,
+                Smoking_History=smoking_history,
+                **{
+                    "Height_(cm)": float(height_cm),
+                    "Weight_(kg)": float(weight_kg),
+                    "BMI": float(bmi),
+                    "Alcohol_Consumption": float(alcohol),
+                    "Fruit_Consumption": float(fruit),
+                    "Green_Vegetables_Consumption": float(veg),
+                    "FriedPotato_Consumption": float(fried),
+                }
             )
 
             try:
                 X_input = encode_like_training(raw_df)
                 prob = predict_proba_1(model, X_input)
-
                 label = "Higher risk" if prob >= 0.5 else "Lower risk"
                 st.session_state.last_result = {"prob": prob, "label": label, "X": X_input}
             except Exception as e:
@@ -339,14 +286,14 @@ with right:
         st.progress(min(max(prob, 0.0), 1.0))
 
         st.markdown("---")
-        st.subheader("What you can do next")
+        st.subheader("Next steps (general)")
         st.write(
-            "- If your risk looks high, consider a proper medical checkup.\n"
+            "- If your risk looks high, consider a proper health checkup.\n"
             "- Keep healthy habits (exercise, balanced diet, sleep).\n"
-            "- If you feel unwell or have symptoms, seek medical advice."
+            "- If you have symptoms or feel unwell, seek medical advice."
         )
 
-        with st.expander("Show the model input (debug)"):
+        with st.expander("Show model input (debug)"):
             st.dataframe(res["X"], use_container_width=True)
 
 st.markdown("---")
