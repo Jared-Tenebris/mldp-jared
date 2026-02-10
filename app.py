@@ -13,12 +13,19 @@ st.set_page_config(
     layout="wide"
 )
 
-# Put your model here later:
-# mldp-jared/
-#   app.py
-#   models/
-#     cardiovascular_health_model.pkl
-MODEL_PATH = os.path.join("models", "cardiovascular_health_model.pkl")
+# ------------------------------------------------------------
+# IMPORTANT: you said
+# - no runtime.txt
+# - python 3.13.0
+# - no models/ folder
+#
+# So:
+# 1) UI must ALWAYS load
+# 2) Model loading must be OPTIONAL and NEVER crash the app
+# 3) Default model path = file in the SAME folder as app.py
+# ------------------------------------------------------------
+MODEL_FILENAME = "cardiovascular_health_model.pkl"
+MODEL_PATH = os.path.join(os.path.dirname(__file__), MODEL_FILENAME)  # same folder as app.py
 
 # -------------------------
 # Known categories (stable one-hot alignment)
@@ -57,7 +64,8 @@ def expected_dummy_columns():
     cols = []
     cols.extend(NUM_COLS)
     for col in CAT_COLS:
-        for cat in CATS[col][1:]:  # drop_first=True
+        # drop_first=True behaviour: skip first category
+        for cat in CATS[col][1:]:
             cols.append(f"{col}_{cat}")
     return cols
 
@@ -84,14 +92,16 @@ def try_load_model(path: str):
     """
     Non-fatal model loader:
     Returns (model_or_None, error_string_or_None).
-    UI will ALWAYS load.
+    UI will ALWAYS load even if model can't be loaded (common on Python 3.13).
     """
     if not os.path.exists(path):
         return None, f"Model file not found at: {path}"
+
     try:
         m = joblib.load(path)
         return m, None
     except Exception as e:
+        # Common on cloud Python 3.13 with older numpy pickles
         return None, f"{type(e).__name__}: {e}"
 
 def validate_inputs(h_cm, w_kg, bmi, alcohol, fruit, veg, fried):
@@ -115,6 +125,7 @@ def validate_inputs(h_cm, w_kg, bmi, alcohol, fruit, veg, fried):
 def encode_like_training(raw_df: pd.DataFrame) -> pd.DataFrame:
     for col in CAT_COLS:
         raw_df[col] = pd.Categorical(raw_df[col], categories=CATS[col], ordered=True)
+
     encoded = pd.get_dummies(raw_df, drop_first=True)
     aligned = encoded.reindex(columns=EXPECTED_COLS, fill_value=0)
     return aligned.astype(float)
@@ -135,6 +146,7 @@ st.title("❤️ Cardiovascular Health Risk Screener")
 st.caption("Risk screening only — not a medical diagnosis.")
 show_env_versions()
 
+# Try load model (optional; non-fatal)
 model, model_err = try_load_model(MODEL_PATH)
 
 with st.expander("Important note", expanded=True):
@@ -146,9 +158,13 @@ with st.expander("Important note", expanded=True):
 
 # Model status banner (won't block UI)
 if model is None:
-    st.warning("Model is not loaded yet — UI is working, but prediction is disabled for now.")
-    with st.expander("Model load details"):
+    st.warning("Model is NOT loaded — UI is working, but prediction is disabled for now.")
+    with st.expander("Model load details (debug)"):
         st.code(model_err)
+        st.write("Current expected model file location:")
+        st.code(MODEL_PATH)
+        st.write("If you want it to load locally, put the model file next to app.py:")
+        st.code(f"{MODEL_FILENAME}")
 
 left, right = st.columns([1.05, 0.95], gap="large")
 
@@ -240,7 +256,7 @@ with right:
                 st.write(f"- {e}")
 
         elif model is None:
-            st.error("Prediction disabled (model not loaded). UI is working — we will fix model later.")
+            st.error("Prediction disabled (model not loaded). UI is working — we’ll fix model later.")
 
         else:
             raw_df = pd.DataFrame([{
