@@ -1,310 +1,228 @@
 # app.py
-import streamlit as st
-import pandas as pd
-import numpy as np
-import joblib
 import os
-from typing import Dict, List, Tuple
+import joblib
+import numpy as np
+import pandas as pd
+import streamlit as st
 
-# -------------------------
-# Page config + basic theme
-# -------------------------
-st.set_page_config(
-    page_title="Cardiovascular Health Risk Screener",
-    page_icon="❤️",
-    layout="centered",
-)
+# =========================================================
+# CONFIG
+# =========================================================
+APP_TITLE = "❤️ Cardiovascular Health Risk Screener"
+MODEL_PATH = "cardiovascular_health_model.pkl"
+DATA_PATH = "CVD_cleaned.csv"          # used to rebuild exact dummy columns (same as training)
+TARGET_COL = "Heart_Disease"           # must match your notebook
 
-st.title("❤️ Cardiovascular Health Risk Screener")
-st.caption("Risk screening tool (not a medical diagnosis). For educational use in your ML project demo.")
+# =========================================================
+# PAGE SETUP
+# =========================================================
+st.set_page_config(page_title=APP_TITLE, page_icon="❤️", layout="centered")
+st.title(APP_TITLE)
+st.caption("Risk screening tool (not a medical diagnosis). For educational demo use.")
 
 st.info(
-    "This app estimates **cardiovascular risk** based on your trained ML model.\n\n"
-    "- It is **not** a medical diagnosis.\n"
-    "- If someone is worried about their health, they should talk to a qualified healthcare professional."
+    "This app estimates **cardiovascular risk** using your trained ML model.\n\n"
+    "- **Not a medical diagnosis**\n"
+    "- For real concerns, consult a qualified healthcare professional."
 )
 
-# -------------------------
-# Load model
-# -------------------------
-MODEL_PATH = "cardiovascular_health_model.pkl"
-
+# =========================================================
+# LOAD MODEL + BUILD FEATURE TEMPLATE FROM TRAINING DATA
+# =========================================================
 @st.cache_resource
 def load_model(path: str):
     return joblib.load(path)
 
+@st.cache_data
+def load_training_data(path: str) -> pd.DataFrame:
+    return pd.read_csv(path)
+
+@st.cache_data
+def build_template_columns(df: pd.DataFrame) -> tuple[list[str], list[str], list[str], dict[str, list[str]]]:
+    """
+    Rebuild the EXACT one-hot encoded feature columns using the same approach used in your notebook:
+      X = df.drop(["Heart_Disease"])
+      X = pd.get_dummies(X, drop_first=True)
+
+    Returns:
+      feature_columns: columns expected by the model
+      numeric_cols: raw numeric input cols (before dummies)
+      categorical_cols: raw categorical input cols (before dummies)
+      cat_options: mapping of categorical col -> sorted unique options (strings)
+    """
+    if TARGET_COL not in df.columns:
+        raise ValueError(f"Dataset is missing target column: {TARGET_COL}")
+
+    raw_X = df.drop(columns=[TARGET_COL]).copy()
+
+    # Identify raw numeric vs categorical
+    numeric_cols = raw_X.select_dtypes(include=[np.number]).columns.tolist()
+    categorical_cols = [c for c in raw_X.columns if c not in numeric_cols]
+
+    # Build options for categorical fields (sorted, stable)
+    cat_options = {}
+    for c in categorical_cols:
+        # keep as string to avoid Streamlit weirdness with mixed types
+        opts = sorted(raw_X[c].dropna().astype(str).unique().tolist())
+        cat_options[c] = opts
+
+    # Build template dummy columns exactly as training
+    X_template = pd.get_dummies(raw_X, drop_first=True)
+    feature_columns = X_template.columns.tolist()
+
+    return feature_columns, numeric_cols, categorical_cols, cat_options
+
+# Guardrails: files exist
 if not os.path.exists(MODEL_PATH):
     st.error(
-        "Model file not found.\n\n"
-        "✅ Fix: Put **cardiovascular_health_model.pkl** in the SAME folder as this app.py file."
+        f"Model file not found: **{MODEL_PATH}**\n\n"
+        "✅ Fix: Put `cardiovascular_health_model.pkl` in the same folder as `app.py`."
     )
     st.stop()
 
+if not os.path.exists(DATA_PATH):
+    st.error(
+        f"Dataset file not found: **{DATA_PATH}**\n\n"
+        "This app uses your training CSV to rebuild the exact one-hot columns (because the model does not store feature names).\n"
+        "✅ Fix: Put `CVD_cleaned.csv` in the same folder as `app.py` (and include it in GitHub for deployment)."
+    )
+    st.stop()
+
+# Load resources
 try:
     model = load_model(MODEL_PATH)
 except Exception as e:
-    st.error("Failed to load the model file. The .pkl might be corrupted or saved differently.")
+    st.error("Failed to load the model. The .pkl may be corrupted or saved incorrectly.")
     st.exception(e)
     st.stop()
 
-# -------------------------
-# Feature name extraction (robust)
-# -------------------------
-def get_feature_columns(m) -> List[str]:
-    # Best-case: you embedded feature_names_ during export
-    if hasattr(m, "feature_names_"):
-        cols = list(getattr(m, "feature_names_"))
-        if cols:
-            return cols
-
-    # Some sklearn objects implement get_feature_names_out
-    try:
-        if hasattr(m, "get_feature_names_out"):
-            cols = list(m.get_feature_names_out())
-            if cols:
-                return cols
-    except Exception:
-        pass
-
-    # If pipeline, try transformer steps
-    try:
-        if hasattr(m, "named_steps"):
-            for _step_name, step in m.named_steps.items():
-                if hasattr(step, "get_feature_names_out"):
-                    cols = list(step.get_feature_names_out())
-                    if cols:
-                        return cols
-    except Exception:
-        pass
-
-    return []
-
-feature_columns = get_feature_columns(model)
-
-if not feature_columns:
-    st.error(
-        "Could not detect the model's input feature names.\n\n"
-        "✅ Fix (recommended): when exporting your model, attach feature names like:\n"
-        "model.feature_names_ = list(X_train.columns)  # before joblib.dump(...)"
-    )
+try:
+    df_train = load_training_data(DATA_PATH)
+    feature_columns, numeric_cols, categorical_cols, cat_options = build_template_columns(df_train)
+except Exception as e:
+    st.error("Failed to load dataset / build feature template columns.")
+    st.exception(e)
     st.stop()
 
-# -------------------------
-# Helpers: build input safely
-# -------------------------
-def make_empty_input(columns: List[str]) -> pd.DataFrame:
-    return pd.DataFrame([np.zeros(len(columns), dtype=float)], columns=columns)
-
-def set_value(df: pd.DataFrame, col: str, value):
-    if col in df.columns:
-        df.at[0, col] = value
-
-def prettify_label(text: str) -> str:
-    return text.replace("_", " ").replace("  ", " ").strip()
-
-def infer_dummy_groups(columns: List[str]) -> Dict[str, List[str]]:
-    """
-    Groups one-hot columns by prefix using the last underscore split:
-      Prefix_CategoryValue
-    Example:
-      General_Health_Good, General_Health_Fair -> prefix General_Health
-    """
-    groups: Dict[str, List[str]] = {}
-    for c in columns:
-        if "_" not in c:
-            continue
-        prefix, _suffix = c.rsplit("_", 1)
-        groups.setdefault(prefix, []).append(c)
-
-    # keep only groups that look like categorical one-hot (>=2 columns)
-    groups = {p: sorted(cols) for p, cols in groups.items() if len(cols) >= 2}
-    return groups
-
-def is_binary_col(col: str) -> bool:
-    # common dummy/binary patterns
-    return (
-        col.endswith("_Yes")
-        or col.endswith("_No")
-        or col.endswith("_Positive")
-        or col.endswith("_True")
-        or col.endswith("_1")
-    )
-
-def get_numeric_cols(columns: List[str], dummy_groups: Dict[str, List[str]]) -> List[str]:
-    dummy_cols = set()
-    for cols in dummy_groups.values():
-        dummy_cols.update(cols)
-
-    numeric = []
-    for c in columns:
-        if c in dummy_cols:
-            continue
-        if is_binary_col(c):
-            continue
-        numeric.append(c)
-    return sorted(numeric)
-
-def get_single_dummy_binaries(columns: List[str], dummy_groups: Dict[str, List[str]]) -> List[str]:
-    dummy_cols = set()
-    for cols in dummy_groups.values():
-        dummy_cols.update(cols)
-
-    binaries = []
-    for c in columns:
-        if c in dummy_cols:
-            continue
-        if is_binary_col(c):
-            binaries.append(c)
-    return sorted(binaries)
-
-def set_one_hot(df: pd.DataFrame, prefix: str, chosen_value: str, group_cols: List[str], baseline_label: str = "(baseline)"):
-    # clear group
-    for c in group_cols:
-        df.at[0, c] = 0
-
-    # baseline => all zeros
-    if chosen_value == baseline_label:
-        return
-
-    target = f"{prefix}_{chosen_value}"
-    if target in df.columns:
-        df.at[0, target] = 1
-
-def safe_float(x, default=None):
-    try:
-        v = float(x)
-        if np.isfinite(v):
-            return v
-    except Exception:
-        pass
-    return default
-
-# -------------------------
-# Auto UI structure
-# -------------------------
-dummy_groups = infer_dummy_groups(feature_columns)
-numeric_cols = get_numeric_cols(feature_columns, dummy_groups)
-binary_cols = get_single_dummy_binaries(feature_columns, dummy_groups)
-
-user_input = make_empty_input(feature_columns)
-
-# -------------------------
-# Sidebar: help + sanity info
-# -------------------------
+# =========================================================
+# SIDEBAR
+# =========================================================
 with st.sidebar:
-    st.header("ℹ️ How to use")
-    st.write(
-        "1) Fill in inputs\n"
-        "2) Click **Predict**\n"
-        "3) View prediction + probability\n\n"
-        "If your model used one-hot encoding with drop_first=True, "
-        "each dropdown includes a **(baseline)** option that means “all zeros”."
-    )
+    st.header("ℹ️ Quick info")
+    st.write(f"**Model:** `{MODEL_PATH}`")
+    st.write(f"**Template CSV:** `{DATA_PATH}`")
+    st.write(f"**Raw input fields:** {len(numeric_cols) + len(categorical_cols)}")
+    st.write(f"**Model features (after one-hot):** {len(feature_columns)}")
     st.divider()
-    st.write(f"**Model file:** {MODEL_PATH}")
-    st.write(f"**Detected features:** {len(feature_columns)}")
+    st.write(
+        "If your model does **not** include feature names, this is the safest method:\n"
+        "- Use the same CSV structure\n"
+        "- Rebuild one-hot columns with `drop_first=True`\n"
+        "- Align to the template columns before predicting"
+    )
 
-# -------------------------
-# Input validation rules (safe defaults)
-# -------------------------
-RANGE_HINTS: Dict[str, Tuple[float, float, float]] = {
+# =========================================================
+# INPUT VALIDATION RULES (safe + user-friendly)
+# =========================================================
+RANGE_HINTS = {
+    # Common CVD fields (only applied if those columns exist)
     "BMI": (10.0, 60.0, 25.0),
-    "Height_(cm)": (120.0, 220.0, 170.0),
-    "Weight_(kg)": (30.0, 200.0, 70.0),
     "Sleep_Hours": (0.0, 24.0, 7.0),
     "Physical_Health_Days": (0.0, 30.0, 0.0),
     "Mental_Health_Days": (0.0, 30.0, 0.0),
-    "Alcohol_Consumption": (0.0, 100.0, 0.0),
-    "Fruit_Consumption": (0.0, 50.0, 0.0),
-    "Green_Vegetables_Consumption": (0.0, 50.0, 0.0),
-    "FriedPotato_Consumption": (0.0, 50.0, 0.0),
 }
 
-def numeric_widget(col: str):
-    label = prettify_label(col)
-    lo, hi, default = RANGE_HINTS.get(col, (0.0, 100.0, 0.0))
-
-    if "Days" in label and col not in RANGE_HINTS:
-        lo, hi, default = 0.0, 30.0, 0.0
-
-    if "Consumption" in label and col not in RANGE_HINTS:
-        lo, hi, default = 0.0, 100.0, 0.0
-
-    val = st.number_input(
-        label,
-        min_value=float(lo),
-        max_value=float(hi),
-        value=float(default),
-        step=1.0 if hi - lo >= 10 else 0.5,
-        help=f"Expected range: {lo} to {hi}",
-    )
-    set_value(user_input, col, float(val))
-
-def binary_widget(col: str):
-    label = prettify_label(col)
-    display = {0: "No (0)", 1: "Yes (1)"}
-    choice = st.selectbox(label, [0, 1], format_func=lambda x: display[x], index=0)
-    set_value(user_input, col, int(choice))
-
-def categorical_widget(prefix: str, group_cols: List[str]):
-    suffixes = [c.replace(prefix + "_", "") for c in group_cols]
-    opts = ["(baseline)"] + suffixes
-    chosen = st.selectbox(prettify_label(prefix), opts, index=0)
-    set_one_hot(user_input, prefix, chosen, group_cols, baseline_label="(baseline)")
-
-def validate_inputs(df: pd.DataFrame) -> List[str]:
+def validate_raw_inputs(raw_row: dict) -> list[str]:
     errors = []
 
-    # Example validation: BMI must be > 0 if present
-    if "BMI" in df.columns:
-        bmi = safe_float(df.at[0, "BMI"], default=0.0)
-        if bmi is None or bmi <= 0:
-            errors.append("BMI must be greater than 0.")
+    if "BMI" in raw_row:
+        try:
+            if float(raw_row["BMI"]) <= 0:
+                errors.append("BMI must be greater than 0.")
+        except Exception:
+            errors.append("BMI must be a valid number.")
 
-    # Sleep hours 0-24 if present
-    if "Sleep_Hours" in df.columns:
-        sh = safe_float(df.at[0, "Sleep_Hours"], default=0.0)
-        if sh is None or sh < 0 or sh > 24:
-            errors.append("Sleep Hours must be between 0 and 24.")
+    if "Sleep_Hours" in raw_row:
+        try:
+            sh = float(raw_row["Sleep_Hours"])
+            if sh < 0 or sh > 24:
+                errors.append("Sleep Hours must be between 0 and 24.")
+        except Exception:
+            errors.append("Sleep Hours must be a valid number.")
 
-    # No NaN / inf anywhere
-    if not np.isfinite(df.to_numpy()).all():
-        errors.append("Some inputs are invalid (NaN/Infinity). Please re-check your fields.")
+    # Generic numeric checks
+    for c in numeric_cols:
+        v = raw_row.get(c, None)
+        if v is None:
+            continue
+        try:
+            fv = float(v)
+            if not np.isfinite(fv):
+                errors.append(f"{c} is invalid (NaN/Infinity).")
+        except Exception:
+            errors.append(f"{c} must be a valid number.")
 
     return errors
 
-# -------------------------
-# Main form (interactive + safe)
-# -------------------------
-with st.form("predict_form"):
-    st.subheader("🧾 Enter details")
+# =========================================================
+# BUILD UI (highly interactive + responsive)
+# =========================================================
+st.subheader("🧾 Enter details")
 
+raw_input = {}
+
+with st.form("predict_form", clear_on_submit=False):
+    # ---------- Numeric ----------
     if numeric_cols:
-        st.markdown("#### Numeric fields")
-        cols2 = st.columns(2)
-        for i, col in enumerate(numeric_cols):
-            with cols2[i % 2]:
-                numeric_widget(col)
+        st.markdown("### Numeric fields")
+        colA, colB = st.columns(2)
+        for i, c in enumerate(numeric_cols):
+            lo, hi, default = RANGE_HINTS.get(c, (0.0, 100.0, 0.0))
+            label = c.replace("_", " ")
 
-    if dummy_groups:
-        st.markdown("#### Categorical fields (dropdowns)")
-        for prefix in sorted(dummy_groups.keys()):
-            categorical_widget(prefix, dummy_groups[prefix])
+            container = colA if i % 2 == 0 else colB
+            with container:
+                raw_input[c] = st.number_input(
+                    label,
+                    min_value=float(lo),
+                    max_value=float(hi),
+                    value=float(default),
+                    step=1.0 if (hi - lo) >= 10 else 0.5,
+                    help=f"Expected range: {lo} to {hi}",
+                )
 
-    if binary_cols:
-        st.markdown("#### Yes/No fields")
-        cols2 = st.columns(2)
-        for i, col in enumerate(binary_cols):
-            with cols2[i % 2]:
-                binary_widget(col)
+    # ---------- Categorical ----------
+    if categorical_cols:
+        st.markdown("### Categorical fields (dropdowns)")
+        for c in categorical_cols:
+            opts = cat_options.get(c, [])
+            if not opts:
+                # fallback
+                opts = ["(unknown)"]
+
+            # drop_first=True baseline is the first category in sorted order
+            baseline = opts[0]
+            baseline_label = f"(baseline: {baseline})"
+            display_opts = [baseline_label] + opts[1:]
+
+            choice = st.selectbox(
+                c.replace("_", " "),
+                options=display_opts,
+                index=0,
+                help="Baseline represents the dropped first category used in one-hot encoding (drop_first=True).",
+            )
+            if choice == baseline_label:
+                raw_input[c] = baseline
+            else:
+                raw_input[c] = choice
 
     submitted = st.form_submit_button("✅ Predict")
 
-# -------------------------
-# Predict (no crash + clear errors)
-# -------------------------
+# =========================================================
+# TRANSFORM + PREDICT (no crash + clear user errors)
+# =========================================================
 if submitted:
-    errs = validate_inputs(user_input)
+    errs = validate_raw_inputs(raw_input)
     if errs:
         st.error("Please fix the following before predicting:")
         for e in errs:
@@ -312,30 +230,50 @@ if submitted:
         st.stop()
 
     try:
-        pred = model.predict(user_input)[0]
+        # Build 1-row raw DataFrame with the SAME raw columns as training
+        raw_df = pd.DataFrame([raw_input])
 
-        proba = None
-        classes = None
-        pos_idx = None
-
-        if hasattr(model, "predict_proba"):
-            proba = model.predict_proba(user_input)[0]
-            if hasattr(model, "classes_"):
-                classes = list(model.classes_)
-                if 1 in classes:
-                    pos_idx = classes.index(1)
+        # Ensure any missing raw columns (rare) are added with safe defaults
+        raw_expected_cols = df_train.drop(columns=[TARGET_COL]).columns.tolist()
+        for c in raw_expected_cols:
+            if c not in raw_df.columns:
+                # numeric -> 0, categorical -> baseline if known else empty string
+                if c in numeric_cols:
+                    raw_df[c] = 0.0
                 else:
-                    pos_idx = 1 if len(classes) > 1 else 0
-            else:
-                classes = [f"class_{i}" for i in range(len(proba))]
-                pos_idx = 1 if len(proba) > 1 else 0
+                    opts = cat_options.get(c, [""])
+                    raw_df[c] = opts[0] if opts else ""
+
+        raw_df = raw_df[raw_expected_cols]  # exact order
+
+        # One-hot encode same as training
+        X_live = pd.get_dummies(raw_df, drop_first=True)
+
+        # Align to template columns (critical to avoid mismatch)
+        X_live = X_live.reindex(columns=feature_columns, fill_value=0)
+
+        # Final safety: ensure numeric dtype
+        X_live = X_live.astype(float)
+
+        # Predict
+        pred = model.predict(X_live)[0]
 
         st.divider()
         st.subheader("📌 Results")
-
         st.success(f"Prediction: **{pred}**")
 
-        if proba is not None and pos_idx is not None:
+        # Probabilities + risk bar
+        if hasattr(model, "predict_proba"):
+            proba = model.predict_proba(X_live)[0]
+
+            classes = list(model.classes_) if hasattr(model, "classes_") else [f"class_{i}" for i in range(len(proba))]
+
+            # Try to pick positive class intelligently (1 if present else second column)
+            if 1 in classes:
+                pos_idx = classes.index(1)
+            else:
+                pos_idx = 1 if len(classes) > 1 else 0
+
             risk = float(proba[pos_idx])
             st.metric("Estimated risk (positive class probability)", f"{risk:.3f}")
             st.progress(min(max(risk, 0.0), 1.0))
@@ -350,14 +288,17 @@ if submitted:
             st.markdown("**Prediction probabilities:**")
             st.dataframe(pd.DataFrame([proba], columns=classes), use_container_width=True)
 
-        with st.expander("Show full model input (debug)"):
-            st.dataframe(user_input, use_container_width=True)
+        with st.expander("Show full transformed model input (debug)"):
+            st.dataframe(X_live, use_container_width=True)
 
     except Exception as e:
         st.error(
-            "Prediction failed — usually caused by **feature mismatch**.\n\n"
-            "✅ Fix: Re-export your model with embedded feature names and ensure Streamlit builds the same columns."
+            "Prediction failed.\n\n"
+            "Common causes:\n"
+            "- Model expects different columns than the training CSV\n"
+            "- Training CSV is not the same one used when the model was trained\n\n"
+            "✅ Fix: Use the same `CVD_cleaned.csv` you trained on, and redeploy."
         )
         st.exception(e)
 
-st.caption("Model: cardiovascular_health_model.pkl • Input validation + user-facing errors • Smooth demo-ready UI")
+st.caption("Uses training CSV to rebuild dummy columns (drop_first=True) • Includes validation + friendly errors • Demo-ready")
