@@ -1,93 +1,53 @@
 # app.py
 import os
-import sys
-import joblib
 import numpy as np
 import pandas as pd
+import joblib
 import streamlit as st
-import sklearn
 
-st.set_page_config(page_title="Cardiovascular Health Risk Screener", page_icon="❤️", layout="wide")
+# -------------------------
+# Config
+# -------------------------
+st.set_page_config(
+    page_title="Cardiovascular Health Risk Screener",
+    page_icon="❤️",
+    layout="wide",
+)
 
-# =========================
-# Model path (relative)
-# =========================
-APP_DIR = os.path.dirname(os.path.abspath(__file__))
-MODEL_PATH = os.path.join(APP_DIR, "models", "cardiovascular_health_model.pkl")
+MODEL_PATH = "cardiovascular_health_model.pkl"
 
-# =========================
-# Known categories (force stable one-hot)
-# =========================
-CATS = {
-    "General_Health": ["Excellent", "Fair", "Good", "Poor", "Very Good"],
-    "Checkup": [
-        "5 or more years ago",
-        "Never",
-        "Within the past 2 years",
-        "Within the past 5 years",
-        "Within the past year",
-    ],
-    "Exercise": ["No", "Yes"],
-    "Skin_Cancer": ["No", "Yes"],
-    "Other_Cancer": ["No", "Yes"],
-    "Depression": ["No", "Yes"],
-    "Diabetes": ["No", "Yes"],
-    "Arthritis": ["No", "Yes"],
-    "Sex": ["Female", "Male"],
-    "Age_Category": [
-        "18-24", "25-29", "30-34", "35-39", "40-44", "45-49",
-        "50-54", "55-59", "60-64", "65-69", "70-74", "75-79", "80+",
-    ],
-    "Smoking_History": ["No", "Yes"],
-}
-
-NUM_COLS = [
-    "Height_(cm)", "Weight_(kg)", "BMI",
-    "Alcohol_Consumption", "Fruit_Consumption",
-    "Green_Vegetables_Consumption", "FriedPotato_Consumption",
-]
-CAT_COLS = list(CATS.keys())
-
-def expected_dummy_columns():
-    cols = []
-    cols.extend(NUM_COLS)
-    for col in CAT_COLS:
-        for cat in CATS[col][1:]:  # drop_first=True
-            cols.append(f"{col}_{cat}")
-    return cols
-
-EXPECTED_COLS = expected_dummy_columns()
-
-# =========================
+# -------------------------
 # Helpers
-# =========================
+# -------------------------
+def load_model(path: str):
+    if not os.path.exists(path):
+        st.error(f"Model file not found: {path}\n\nMake sure '{MODEL_PATH}' is in the same folder as app.py.")
+        st.stop()
+    try:
+        return joblib.load(path)
+    except Exception as e:
+        st.error("Failed to load the model. The file may be corrupted or incompatible.")
+        st.exception(e)
+        st.stop()
+
+def get_expected_feature_columns(model):
+    # Best case: sklearn estimators fitted on a DataFrame store feature_names_in_
+    cols = getattr(model, "feature_names_in_", None)
+    if cols is not None:
+        return list(cols)
+
+    # Fallback: some models store n_features_in_ but not names
+    st.error(
+        "This model does not contain feature names (feature_names_in_ missing). "
+        "Re-train using a pandas DataFrame so feature names are preserved."
+    )
+    st.stop()
+
 def safe_float(x):
     try:
         return float(x)
     except Exception:
         return None
-
-def show_env_versions():
-    st.caption(
-        f"Runtime versions — Python: {sys.version.split()[0]} | "
-        f"NumPy: {np.__version__} | pandas: {pd.__version__} | "
-        f"scikit-learn: {sklearn.__version__} | joblib: {joblib.__version__}"
-    )
-
-@st.cache_resource(show_spinner=False)
-def try_load_model(path: str):
-    """
-    Non-fatal model loader:
-    Returns (model_or_None, error_string_or_None).
-    No st.stop() here so app never crashes on startup.
-    """
-    if not os.path.exists(path):
-        return None, f"Model file not found: {path}"
-    try:
-        m = joblib.load(path)
-        return m, None
-    except Exception as e:
-        return None, f"{type(e).__name__}: {e}"
 
 def validate_inputs(h_cm, w_kg, bmi, alcohol, fruit, veg, fried):
     errors = []
@@ -95,18 +55,19 @@ def validate_inputs(h_cm, w_kg, bmi, alcohol, fruit, veg, fried):
     if h_cm is None or h_cm <= 0:
         errors.append("Height must be a positive number.")
     elif h_cm < 100 or h_cm > 230:
-        errors.append("Height looks unusual. Use 100–230 cm.")
+        errors.append("Height looks unusual. Enter a value between 100 and 230 cm.")
 
     if w_kg is None or w_kg <= 0:
         errors.append("Weight must be a positive number.")
     elif w_kg < 25 or w_kg > 300:
-        errors.append("Weight looks unusual. Use 25–300 kg.")
+        errors.append("Weight looks unusual. Enter a value between 25 and 300 kg.")
 
     if bmi is None or bmi <= 0:
         errors.append("BMI must be a positive number.")
     elif bmi < 10 or bmi > 60:
-        errors.append("BMI looks unusual. Use 10–60.")
+        errors.append("BMI looks unusual. Enter a value between 10 and 60.")
 
+    # Consumption fields: allow 0 and up
     for name, val, hi in [
         ("Alcohol consumption", alcohol, 200),
         ("Fruit consumption", fruit, 50),
@@ -116,75 +77,109 @@ def validate_inputs(h_cm, w_kg, bmi, alcohol, fruit, veg, fried):
         if val is None or val < 0:
             errors.append(f"{name} must be 0 or more.")
         elif val > hi:
-            errors.append(f"{name} looks too high. Use ≤ {hi}.")
+            errors.append(f"{name} looks too high. Enter a value less than or equal to {hi}.")
+
     return errors
 
-def encode_like_training(raw_df: pd.DataFrame) -> pd.DataFrame:
-    for col in CAT_COLS:
-        raw_df[col] = pd.Categorical(raw_df[col], categories=CATS[col], ordered=True)
+def build_raw_input_row(
+    general_health,
+    checkup,
+    exercise,
+    skin_cancer,
+    other_cancer,
+    depression,
+    diabetes,
+    arthritis,
+    sex,
+    age_category,
+    smoking_history,
+    height_cm,
+    weight_kg,
+    bmi,
+    alcohol,
+    fruit,
+    veg,
+    fried_potato,
+):
+    # Column names must match the original dataset BEFORE get_dummies
+    return pd.DataFrame([{
+        "General_Health": general_health,
+        "Checkup": checkup,
+        "Exercise": exercise,
+        "Skin_Cancer": skin_cancer,
+        "Other_Cancer": other_cancer,
+        "Depression": depression,
+        "Diabetes": diabetes,
+        "Arthritis": arthritis,
+        "Sex": sex,
+        "Age_Category": age_category,
+        "Smoking_History": smoking_history,
+        "Height_(cm)": height_cm,
+        "Weight_(kg)": weight_kg,
+        "BMI": bmi,
+        "Alcohol_Consumption": alcohol,
+        "Fruit_Consumption": fruit,
+        "Green_Vegetables_Consumption": veg,
+        "FriedPotato_Consumption": fried_potato,
+    }])
 
+def encode_like_training(raw_df: pd.DataFrame, expected_cols: list[str]) -> pd.DataFrame:
+    # Training used: pd.get_dummies(X, drop_first=True) on ALL predictors
     encoded = pd.get_dummies(raw_df, drop_first=True)
-    aligned = encoded.reindex(columns=EXPECTED_COLS, fill_value=0)
+
+    # Align to model expected columns (missing -> 0)
+    aligned = encoded.reindex(columns=expected_cols, fill_value=0)
+
+    # Ensure numeric dtype
     return aligned.astype(float)
 
-def predict_proba_1(model, X: pd.DataFrame) -> float:
-    if hasattr(model, "predict_proba"):
-        proba = model.predict_proba(X)
-        if isinstance(proba, np.ndarray) and proba.shape[1] >= 2:
-            return float(proba[0, 1])
-        return float(proba[0])
+# -------------------------
+# Load model & expected cols
+# -------------------------
+model = load_model(MODEL_PATH)
+expected_cols = get_expected_feature_columns(model)
 
-    pred = int(model.predict(X)[0])
-    return 1.0 if pred == 1 else 0.0
-
-# =========================
+# -------------------------
 # UI
-# =========================
+# -------------------------
 st.title("❤️ Cardiovascular Health Risk Screener")
-st.caption("Risk screening only — not a medical diagnosis.")
-show_env_versions()
-
-# Load model (non-fatal)
-model, model_err = try_load_model(MODEL_PATH)
+st.caption("A simple risk screening tool. Not a medical diagnosis.")
 
 with st.expander("Important note", expanded=True):
     st.write(
-        "- This app estimates cardiovascular risk using a trained ML model.\n"
+        "- This app estimates risk based on a machine learning model.\n"
         "- It is **not** a diagnosis.\n"
-        "- If you have concerns, seek advice from a qualified healthcare professional."
+        "- If you are worried about symptoms or health, talk to a qualified healthcare professional."
     )
-
-st.caption(f"Model path: `{MODEL_PATH}`")
-
-if model is None:
-    st.error("Model could not be loaded, so predictions are currently unavailable.")
-    st.warning(
-        "Most common causes:\n"
-        "• Wrong file path / missing model\n"
-        "• Pickle version mismatch (NumPy / scikit-learn)\n"
-    )
-    with st.expander("Technical details"):
-        st.code(model_err)
 
 left, right = st.columns([1.05, 0.95], gap="large")
 
 with left:
     st.subheader("1) Enter your details")
 
-    GENERAL_HEALTH_UI = ["Excellent", "Very Good", "Good", "Fair", "Poor"]
-    CHECKUP_UI = ["Within the past year", "Within the past 2 years", "Within the past 5 years", "5 or more years ago", "Never"]
+    GENERAL_HEALTH = ["Excellent", "Very Good", "Good", "Fair", "Poor"]
+    CHECKUP = [
+        "Within the past year",
+        "Within the past 2 years",
+        "Within the past 5 years",
+        "5 or more years ago",
+        "Never",
+    ]
     YES_NO = ["No", "Yes"]
-    SEX_UI = ["Female", "Male"]
-    AGE_UI = CATS["Age_Category"]
+    SEX = ["Female", "Male"]
+    AGE_CATEGORY = [
+        "18-24", "25-29", "30-34", "35-39", "40-44", "45-49",
+        "50-54", "55-59", "60-64", "65-69", "70-74", "75-79", "80+"
+    ]
 
     with st.form("risk_form", clear_on_submit=False):
         c1, c2 = st.columns(2)
 
         with c1:
-            general_health = st.selectbox("General health", GENERAL_HEALTH_UI, index=2)
-            checkup = st.selectbox("Last medical checkup", CHECKUP_UI, index=0)
-            age_category = st.selectbox("Age group", AGE_UI, index=0)
-            sex = st.selectbox("Sex", SEX_UI, index=0)
+            general_health = st.selectbox("General health", GENERAL_HEALTH, index=2)
+            checkup = st.selectbox("Last medical checkup", CHECKUP, index=0)
+            age_category = st.selectbox("Age group", AGE_CATEGORY, index=0)
+            sex = st.selectbox("Sex", SEX, index=0)
 
         with c2:
             exercise = st.selectbox("Do you exercise?", YES_NO, index=1)
@@ -215,7 +210,7 @@ with left:
 
         if bmi_mode == "Auto-calculate" and height_cm and weight_kg and height_cm > 0:
             bmi_val = weight_kg / ((height_cm / 100.0) ** 2)
-            st.text_input("BMI (auto)", value=f"{bmi_val:.2f}", disabled=True)
+            bmi_in = st.text_input("BMI (auto)", value=f"{bmi_val:.2f}", disabled=True)
             bmi = bmi_val
         else:
             bmi_in = st.text_input("BMI", value="24.2")
@@ -247,47 +242,58 @@ with right:
     if "last_result" not in st.session_state:
         st.session_state.last_result = None
 
+    if "submitted_flag" not in st.session_state:
+        st.session_state.submitted_flag = False
+
+    # When form submits, Streamlit reruns; detect with the local variable
+    try:
+        submitted
+    except NameError:
+        submitted = False
+
     if submitted:
         errs = validate_inputs(height_cm, weight_kg, bmi, alcohol, fruit, veg, fried)
-
         if errs:
             st.error("Please fix these before predicting:")
             for e in errs:
                 st.write(f"- {e}")
-
-        elif model is None:
-            st.error("Prediction unavailable because the model failed to load.")
-            st.info("Fix the model path or re-save the model with compatible NumPy/sklearn versions.")
-
         else:
-            raw_df = pd.DataFrame([{
-                "General_Health": general_health,
-                "Checkup": checkup,
-                "Exercise": exercise,
-                "Skin_Cancer": skin_cancer,
-                "Other_Cancer": other_cancer,
-                "Depression": depression,
-                "Diabetes": diabetes,
-                "Arthritis": arthritis,
-                "Sex": sex,
-                "Age_Category": age_category,
-                "Smoking_History": smoking_history,
-                "Height_(cm)": float(height_cm),
-                "Weight_(kg)": float(weight_kg),
-                "BMI": float(bmi),
-                "Alcohol_Consumption": float(alcohol),
-                "Fruit_Consumption": float(fruit),
-                "Green_Vegetables_Consumption": float(veg),
-                "FriedPotato_Consumption": float(fried),
-            }])
+            raw_df = build_raw_input_row(
+                general_health=general_health,
+                checkup=checkup,
+                exercise=exercise,
+                skin_cancer=skin_cancer,
+                other_cancer=other_cancer,
+                depression=depression,
+                diabetes=diabetes,
+                arthritis=arthritis,
+                sex=sex,
+                age_category=age_category,
+                smoking_history=smoking_history,
+                height_cm=float(height_cm),
+                weight_kg=float(weight_kg),
+                bmi=float(bmi),
+                alcohol=float(alcohol),
+                fruit=float(fruit),
+                veg=float(veg),
+                fried_potato=float(fried),
+            )
 
             try:
-                X_input = encode_like_training(raw_df)
-                prob = predict_proba_1(model, X_input)
-                label = "Higher risk" if prob >= 0.5 else "Lower risk"
-                st.session_state.last_result = {"prob": prob, "label": label, "X": X_input}
+                X_input = encode_like_training(raw_df, expected_cols)
+
+                # Predict probability of class 1 (Yes / has heart disease)
+                if hasattr(model, "predict_proba"):
+                    prob = float(model.predict_proba(X_input)[0, 1])
+                else:
+                    # Fallback if no predict_proba (unlikely here)
+                    pred = int(model.predict(X_input)[0])
+                    prob = 1.0 if pred == 1 else 0.0
+
+                pred_label = "Higher risk" if prob >= 0.5 else "Lower risk"
+                st.session_state.last_result = {"prob": prob, "label": pred_label}
             except Exception as e:
-                st.error("Prediction failed (feature mismatch or model issue).")
+                st.error("Prediction failed due to input/feature mismatch.")
                 st.exception(e)
 
     res = st.session_state.last_result
@@ -302,15 +308,19 @@ with right:
         st.progress(min(max(prob, 0.0), 1.0))
 
         st.markdown("---")
-        st.subheader("Next steps (general)")
+        st.subheader("What you can do next")
         st.write(
             "- If your risk looks high, consider a proper health checkup.\n"
-            "- Keep healthy habits (exercise, balanced diet, sleep).\n"
-            "- If you have symptoms or feel unwell, seek medical advice."
+            "- Focus on healthy habits (exercise, balanced diet, sleep).\n"
+            "- If you have concerning symptoms, seek medical advice."
         )
 
-        with st.expander("Show model input (debug)"):
-            st.dataframe(res["X"], use_container_width=True)
+        with st.expander("Show the processed inputs (for debugging)"):
+            # Show the aligned features used by the model
+            try:
+                st.dataframe(X_input, use_container_width=True)
+            except Exception:
+                st.write("Processed features unavailable.")
 
 st.markdown("---")
-st.caption("Model: models/cardiovascular_health_model.pkl • App: app.py")
+st.caption("Model file: cardiovascular_health_model.pkl | App file: app.py")
