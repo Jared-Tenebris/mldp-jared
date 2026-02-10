@@ -69,10 +69,12 @@ def show_env_versions():
         f"scikit-learn: {sklearn.__version__} | joblib: {joblib.__version__}"
     )
 
+@st.cache_resource(show_spinner=False)
 def try_load_model(path: str):
     """
-    IMPORTANT: We DO NOT st.stop() here.
-    We return (model_or_None, error_string_or_None) to avoid app crash.
+    Non-fatal model loader:
+    Returns (model_or_None, error_string_or_None).
+    No st.stop() here so app never crashes on startup.
     """
     if not os.path.exists(path):
         return None, f"Model file not found: {path}"
@@ -81,7 +83,7 @@ def try_load_model(path: str):
         m = joblib.load(path)
         return m, None
     except Exception as e:
-        return None, str(e)
+        return None, f"{type(e).__name__}: {e}"
 
 def validate_inputs(h_cm, w_kg, bmi, alcohol, fruit, veg, fried):
     errors = []
@@ -130,16 +132,13 @@ def predict_proba_1(model, X: pd.DataFrame) -> float:
     return 1.0 if pred == 1 else 0.0
 
 # -------------------------
-# Load model (non-crashing)
-# -------------------------
-model, model_err = try_load_model(MODEL_PATH)
-
-# -------------------------
 # UI
 # -------------------------
 st.title("❤️ Cardiovascular Health Risk Screener")
 st.caption("Risk screening only — not a medical diagnosis.")
 show_env_versions()
+
+model, model_err = try_load_model(MODEL_PATH)
 
 with st.expander("Important note", expanded=True):
     st.write(
@@ -148,18 +147,16 @@ with st.expander("Important note", expanded=True):
         "- If you have concerns, seek advice from a qualified healthcare professional."
     )
 
-# Model status block (user-facing, no crash)
+# Clear, user-facing model status (no crash)
 if model is None:
-    st.error("Model could not be loaded in this runtime.")
+    st.error("Model could not be loaded, so predictions are currently unavailable.")
     st.warning(
-        "This is almost always caused by a Python / NumPy / scikit-learn version mismatch between:\n"
-        "- the environment where you saved the model, and\n"
-        "- the environment running this Streamlit app.\n\n"
-        "✅ Fix options:\n"
-        "1) Deploy with Python 3.10/3.11 (recommended)\n"
-        "2) Re-save the model in the same runtime as deployment (Python 3.13 here)\n"
+        "Cause: model file incompatibility (Python/NumPy/scikit-learn mismatch) OR missing model file.\n\n"
+        "Fix:\n"
+        "• If you can control Python on deployment: use Python 3.10/3.11.\n"
+        "• Otherwise: re-save the model in the same runtime as deployment.\n"
     )
-    with st.expander("Technical error details (for developer/marker)"):
+    with st.expander("Technical details (for developer/marker)"):
         st.code(model_err)
 
 left, right = st.columns([1.05, 0.95], gap="large")
@@ -281,7 +278,6 @@ with right:
                 X_input = encode_like_training(raw_df)
                 prob = predict_proba_1(model, X_input)
                 label = "Higher risk" if prob >= 0.5 else "Lower risk"
-
                 st.session_state.last_result = {"prob": prob, "label": label, "X": X_input}
             except Exception as e:
                 st.error("Prediction failed (feature mismatch or model issue).")
